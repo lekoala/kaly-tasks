@@ -1,0 +1,5 @@
+parameters:
+  level: max
+  treatPhpDocTypesAsCertain: false
+includes:
+  - phar://phpstan.phar/conf/bleedingEdge.neon

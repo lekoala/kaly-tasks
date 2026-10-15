@@ -1,0 +1,59 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Kaly\Tasks\Connection;
+
+use Closure;
+use PDO;
+use PDOStatement;
+use RuntimeException;
+
+/**
+ * A PDO handle, or a closure resolving it on each statement when the handle
+ * may change (lazy or reconnecting connections).
+ *
+ * To join an application transaction, the closure must return the handle that
+ * runs it: a different handle writes outside the transaction.
+ */
+final readonly class PdoConnection implements Connection
+{
+    /**
+     * @param PDO|Closure():PDO $pdo
+     */
+    public function __construct(
+        private PDO|Closure $pdo,
+    ) {}
+
+    public function execute(string $sql, array $params = []): int
+    {
+        return $this->run($sql, $params)->rowCount();
+    }
+
+    public function fetchAll(string $sql, array $params = []): array
+    {
+        /** @var list<array<string,mixed>> */
+        return $this->run($sql, $params)->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * @param list<int|string|null> $params
+     */
+    private function run(string $sql, array $params): PDOStatement
+    {
+        $pdo = $this->pdo instanceof PDO ? $this->pdo : ($this->pdo)();
+        $statement = $pdo->prepare($sql);
+        foreach ($params as $i => $value) {
+            $statement->bindValue($i + 1, $value, match (true) {
+                $value === null => PDO::PARAM_NULL,
+                is_int($value) => PDO::PARAM_INT,
+                default => PDO::PARAM_STR,
+            });
+        }
+        if (!$statement->execute()) {
+            $error = $statement->errorInfo()[2] ?? null;
+            throw new RuntimeException('Statement failed: ' . (is_string($error) ? $error : 'unknown error'));
+        }
+        return $statement;
+    }
+}

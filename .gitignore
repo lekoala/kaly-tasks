@@ -1,0 +1,13 @@
+composer.lock
+vendor
+.phpunit.cache
+.trash
+.tmp
+*.log
+
+# demo
+demos/temp
+demos/app/temp
+
+# tests
+tests/temp

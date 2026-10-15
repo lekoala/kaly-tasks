@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      pgsql:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: kaly_tasks
+          POSTGRES_USER: kaly
+          POSTGRES_PASSWORD: kaly
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          ini-values: zend.assertions=1
+          extensions: pdo_pgsql, pcntl
+          coverage: none
+          tools: composer:v2
+
+      - run: composer install --no-interaction --no-progress --prefer-dist
+
+      - run: composer test

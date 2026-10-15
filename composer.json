@@ -1,0 +1,67 @@
+{
+    "name": "lekoala/kaly-tasks",
+    "description": "Durable SQL task queue for Kaly invocable tasks",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Thomas",
+            "email": "thomas@lekoala.be"
+        }
+    ],
+    "keywords": [
+        "queue",
+        "tasks",
+        "jobs",
+        "worker",
+        "postgresql",
+        "outbox"
+    ],
+    "require": {
+        "php": "^8.3",
+        "ext-pdo": "*",
+        "lekoala/kaly": "^0.4",
+        "lekoala/kaly-di": "^0.4",
+        "psr/log": "^1.0 || ^2.0 || ^3.0"
+    },
+    "require-dev": {
+        "carthage-software/mago": "^1.55",
+        "cycle/database": "^2.11",
+        "doctrine/dbal": "^4.2",
+        "phpstan/phpstan": "^2.3",
+        "phpunit/phpunit": "^12"
+    },
+    "suggest": {
+        "ext-pcntl": "Graceful shutdown on signals and hard task timeouts in the worker",
+        "ext-pdo_pgsql": "PostgreSQL task store",
+        "cycle/database": "Share a Cycle database through Kaly\\Tasks\\Connection\\CycleConnection",
+        "doctrine/dbal": "Share a Doctrine connection through Kaly\\Tasks\\Connection\\DoctrineConnection"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kaly\\Tasks\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kaly\\Tasks\\Tests\\": "tests"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": [
+            "@phpunit",
+            "@phpstan",
+            "@mago:lint",
+            "@format:check"
+        ],
+        "phpunit": "@php -d zend.assertions=1 vendor/bin/phpunit",
+        "phpstan": "phpstan analyse src tests --memory-limit=-1",
+        "mago:lint": "mago lint --minimum-report-level warning",
+        "format:check": "mago fmt --check",
+        "fmt": "mago fmt"
+    },
+    "prefer-stable": true
+}
