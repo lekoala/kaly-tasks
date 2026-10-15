@@ -56,6 +56,7 @@ final readonly class PostgresTaskStore implements TaskStore
             "CREATE INDEX {$prefix}_pending ON {$t} (queue, available_at, id) WHERE status = 'pending'",
             "CREATE INDEX {$prefix}_running ON {$t} (lease_until) WHERE status = 'running'",
             "CREATE INDEX {$prefix}_done ON {$t} (finished_at) WHERE status = 'done'",
+            "CREATE INDEX {$prefix}_failed ON {$t} (finished_at) WHERE status = 'failed'",
             "CREATE UNIQUE INDEX {$prefix}_dedup ON {$t} (name, dedup_key) WHERE dedup_key IS NOT NULL",
         ];
     }
@@ -74,6 +75,7 @@ final readonly class PostgresTaskStore implements TaskStore
         if ($queues === []) {
             throw new InvalidArgumentException('Reserve needs at least one queue');
         }
+        self::assertDuration($leaseSeconds, 'The lease', 1);
         $placeholders = implode(', ', array_fill(0, count($queues), '?'));
         $row = $this->connection->fetchAll("WITH next AS (
                 SELECT id FROM {$this->table}
@@ -112,6 +114,7 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function release(ReservedTask $task, int $delaySeconds, string $error): bool
     {
+        self::assertDuration($delaySeconds, 'The retry delay');
         return $this->connection->execute(
             "UPDATE {$this->table}
             SET status = 'pending', owner = NULL, lease_until = NULL, last_error = ?,
@@ -140,6 +143,7 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function failed(int $limit = 50): array
     {
+        self::assertDuration($limit, 'The limit', 1);
         $rows = $this->connection->fetchAll(
             "SELECT id, queue, name, CAST(payload AS TEXT) AS payload, attempts, last_error FROM {$this->table}
             WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT CAST(? AS INTEGER)",
@@ -164,6 +168,10 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int
     {
+        self::assertDuration($olderThanSeconds, 'The done retention');
+        if ($failedOlderThanSeconds !== null) {
+            self::assertDuration($failedOlderThanSeconds, 'The failed retention');
+        }
         $deleted = $this->connection->execute("DELETE FROM {$this->table}
             WHERE status = 'done' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$olderThanSeconds]);
         if ($failedOlderThanSeconds !== null) {
@@ -171,6 +179,16 @@ final readonly class PostgresTaskStore implements TaskStore
                 WHERE status = 'failed' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$failedOlderThanSeconds]);
         }
         return $deleted;
+    }
+
+    /**
+     * Durations and limits are bound as SQL INTEGER.
+     */
+    private static function assertDuration(int $value, string $what, int $min = 0): void
+    {
+        if ($value < $min || $value > 2_147_483_647) {
+            throw new InvalidArgumentException("{$what} must be between {$min} and 2147483647, got {$value}");
+        }
     }
 
     /**

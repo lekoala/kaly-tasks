@@ -17,6 +17,7 @@ use Kaly\Tasks\Worker;
 use Kaly\Tasks\WorkerOptions;
 use PDO;
 use Psr\Log\AbstractLogger;
+use RuntimeException;
 use Stringable;
 
 final class TestLogger extends AbstractLogger
@@ -44,6 +45,19 @@ final readonly class StealLeaseTask
     public function __invoke(PDO $pdo): void
     {
         $pdo->exec("UPDATE {$this->table} SET owner = 'thief'");
+    }
+}
+
+final readonly class StealThenFailTask
+{
+    public function __construct(
+        public string $table,
+    ) {}
+
+    public function __invoke(PDO $pdo): void
+    {
+        $pdo->exec("UPDATE {$this->table} SET owner = 'thief'");
+        throw new RuntimeException('Failed after losing the lease');
     }
 }
 
@@ -77,6 +91,7 @@ class WorkerTest extends PostgresTestCase
         $this->registry = (new TaskRegistry())
             ->register('test.record', RecordTask::class, retry: new RetryPolicy(maxAttempts: 2, delay: 0))
             ->register('test.steal', StealLeaseTask::class)
+            ->register('test.steal-fail', StealThenFailTask::class)
             ->register('test.stop', StopWorkerTask::class);
         $container = new Container(
             Definitions::create()
@@ -89,9 +104,15 @@ class WorkerTest extends PostgresTestCase
         $this->tasks = new DatabaseTaskDispatcher($this->store, $this->registry);
     }
 
-    private function work(int $maxTasks = 1000): int
+    private function work(int $maxTasks = 1000, int $memoryLimit = PHP_INT_MAX): int
     {
-        return $this->worker->run(new WorkerOptions(timeout: 0, maxTasks: $maxTasks, sleepMs: 0, stopWhenEmpty: true));
+        return $this->worker->run(new WorkerOptions(
+            timeout: 0,
+            maxTasks: $maxTasks,
+            memoryLimit: $memoryLimit,
+            sleepMs: 0,
+            stopWhenEmpty: true,
+        ));
     }
 
     public function testRunsTasksWithTheirServices(): void
@@ -162,7 +183,26 @@ class WorkerTest extends PostgresTestCase
         $this->work();
 
         $this->assertSame('running', $this->row(1)['status']);
-        $this->assertSame(['warning Task {task} #{id} completed after losing its lease and may run twice'], $this->logger->records);
+        $this->assertSame(['warning Task {task} #{id} was settled after losing its lease and may run twice'], $this->logger->records);
+    }
+
+    public function testWarnsWhenReleasingALostLease(): void
+    {
+        $this->tasks->dispatch(new StealThenFailTask(self::TABLE));
+
+        $this->work();
+
+        $this->assertSame(['running', 'thief'], [$this->row(1)['status'], $this->row(1)['owner']]);
+        $this->assertSame('warning Task {task} #{id} was settled after losing its lease and may run twice', $this->logger->records[1]);
+    }
+
+    public function testStopsAtTheMemoryLimit(): void
+    {
+        $this->tasks->dispatch(new RecordTask('a'));
+        $this->tasks->dispatch(new RecordTask('b'));
+
+        $this->assertSame(1, $this->work(memoryLimit: 1));
+        $this->assertSame(1, $this->countTasks('pending'));
     }
 
     public function testStopsAfterMaxTasks(): void

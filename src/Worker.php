@@ -115,7 +115,7 @@ final class Worker
             $task = $this->registry->decode($reserved->name, $reserved->payload);
         } catch (Throwable $e) {
             $this->logger->error('Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);
-            $this->store->fail($reserved, $e->getMessage());
+            $this->settled($this->store->fail($reserved, $e->getMessage()), $context);
             return;
         }
         // decode() succeeded, so the type is registered
@@ -125,7 +125,7 @@ final class Worker
         if ($reserved->attempts > $retry->maxAttempts) {
             // Previous attempts never settled: their worker died or exceeded its lease
             $this->logger->error('Task {task} #{id} exceeded {max} attempts', $context + ['max' => $retry->maxAttempts]);
-            $this->store->fail($reserved, "Exceeded {$retry->maxAttempts} attempts");
+            $this->settled($this->store->fail($reserved, "Exceeded {$retry->maxAttempts} attempts"), $context);
             return;
         }
 
@@ -141,14 +141,14 @@ final class Worker
             $error = $e::class . ': ' . $e->getMessage();
             if ($reserved->attempts >= $retry->maxAttempts) {
                 $this->logger->error('Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
-                $this->store->fail($reserved, $error);
+                $this->settled($this->store->fail($reserved, $error), $context);
             } else {
                 $delay = $retry->delayAfter($reserved->attempts);
                 $this->logger->warning(
                     'Task {task} #{id} will retry in {delay}s: {error}',
                     $context + ['delay' => $delay, 'error' => $error, 'exception' => $e],
                 );
-                $this->store->release($reserved, $delay, $error);
+                $this->settled($this->store->release($reserved, $delay, $error), $context);
             }
             return;
         } finally {
@@ -158,8 +158,19 @@ final class Worker
             $this->current = null;
         }
 
-        if (!$this->store->complete($reserved)) {
-            $this->logger->warning('Task {task} #{id} completed after losing its lease and may run twice', $context);
+        $this->settled($this->store->complete($reserved), $context);
+    }
+
+    /**
+     * A task settled after its lease expired belongs to another worker: its
+     * outcome (and retry delay) is lost, and it may run again.
+     *
+     * @param array<string,mixed> $context
+     */
+    private function settled(bool $settled, array $context): void
+    {
+        if (!$settled) {
+            $this->logger->warning('Task {task} #{id} was settled after losing its lease and may run twice', $context);
         }
     }
 

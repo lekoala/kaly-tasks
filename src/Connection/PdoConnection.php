@@ -43,6 +43,10 @@ final readonly class PdoConnection implements Connection
     {
         $pdo = $this->pdo instanceof PDO ? $this->pdo : ($this->pdo)();
         $statement = $pdo->prepare($sql);
+        if ($statement === false) {
+            $error = $pdo->errorInfo()[2] ?? null;
+            throw new RuntimeException('Statement failed: ' . (is_string($error) ? $error : 'unknown error'));
+        }
         foreach ($params as $i => $value) {
             $statement->bindValue($i + 1, $value, match (true) {
                 $value === null => PDO::PARAM_NULL,

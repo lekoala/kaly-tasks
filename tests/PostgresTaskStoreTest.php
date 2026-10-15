@@ -9,6 +9,7 @@ use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\EncodedTask;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\Store\ReservedTask;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class PostgresTaskStoreTest extends PostgresTestCase
 {
@@ -21,6 +22,35 @@ class PostgresTaskStoreTest extends PostgresTestCase
     {
         $this->expectException(InvalidArgumentException::class);
         new PostgresTaskStore(new PdoConnection($this->pdo), 'tasks; DROP TABLE users');
+    }
+
+    /**
+     * @return iterable<string,array{string}>
+     */
+    public static function invalidBounds(): iterable
+    {
+        yield 'no lease' => ['lease'];
+        yield 'negative delay' => ['delay'];
+        yield 'no limit' => ['limit'];
+        yield 'negative retention' => ['retention'];
+        yield 'negative failed retention' => ['failedRetention'];
+        yield 'overflowing retention' => ['overflow'];
+    }
+
+    #[DataProvider('invalidBounds')]
+    public function testRejectsOutOfRangeDurationsAndLimits(string $case): void
+    {
+        $task = new ReservedTask(1, 'a', '{}', 1, 'owner');
+
+        $this->expectException(InvalidArgumentException::class);
+        match ($case) {
+            'lease' => $this->store->reserve(['default'], 'owner', 0),
+            'delay' => $this->store->release($task, -5, 'no'),
+            'limit' => $this->store->failed(0),
+            'retention' => $this->store->purge(-1),
+            'failedRetention' => $this->store->purge(60, -1),
+            default => $this->store->purge(2_147_483_648),
+        };
     }
 
     public function testReservesInOrderAndLeasesToTheOwner(): void

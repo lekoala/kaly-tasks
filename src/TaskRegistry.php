@@ -43,7 +43,7 @@ final class TaskRegistry
 
     /**
      * @param class-string $class
-     * @param string|null $deduplicateBy A string or int parameter: a task whose
+     * @param string|null $deduplicateBy A non-nullable string or int parameter: a task whose
      *  value is already stored under this name is not stored again
      */
     public function register(
@@ -68,7 +68,9 @@ final class TaskRegistry
 
         $type = new TaskType($name, $class, $queue, $retry, self::parameters($class), $deduplicateBy);
         if ($deduplicateBy !== null && !self::isDeduplicationParameter($type, $deduplicateBy)) {
-            throw new InvalidArgumentException("Task {$class} deduplicates by '{$deduplicateBy}', which must be a string or int parameter");
+            throw new InvalidArgumentException(
+                "Task {$class} deduplicates by '{$deduplicateBy}', which must be a non-nullable string or int parameter",
+            );
         }
 
         $this->byName[$name] = $type;
@@ -147,15 +149,7 @@ final class TaskRegistry
                 }
                 throw new UnexpectedValueException("Task '{$name}' payload misses '{$parameter}'");
             }
-            $value = $data[$parameter];
-            $enum = $definition['enum'];
-            if ($enum !== null && $value !== null) {
-                $value = is_int($value) || is_string($value) ? $enum::tryFrom($value) : null;
-                if ($value === null) {
-                    throw new UnexpectedValueException("Task '{$name}' payload has an invalid {$enum} for '{$parameter}'");
-                }
-            }
-            $arguments[$parameter] = $value;
+            $arguments[$parameter] = self::decodeValue($name, $parameter, $definition, $data[$parameter]);
         }
 
         try {
@@ -166,8 +160,48 @@ final class TaskRegistry
     }
 
     /**
+     * Checks a stored value against its declared type, independently of the
+     * caller strict_types mode.
+     *
+     * @param array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null} $definition
+     */
+    private static function decodeValue(string $name, string $parameter, array $definition, mixed $value): mixed
+    {
+        if ($value === null) {
+            if (!$definition['nullable']) {
+                throw new UnexpectedValueException("Task '{$name}' payload has null for non-nullable '{$parameter}'");
+            }
+            return null;
+        }
+
+        $enum = $definition['enum'];
+        if ($enum !== null) {
+            $case = is_int($value) || is_string($value) ? $enum::tryFrom($value) : null;
+            if ($case === null) {
+                throw new UnexpectedValueException("Task '{$name}' payload has an invalid {$enum} for '{$parameter}'");
+            }
+            return $case;
+        }
+
+        $valid = match ($definition['scalar']) {
+            'int' => is_int($value),
+            // JSON may store a whole float as an integer
+            'float' => is_float($value) || is_int($value),
+            'string' => is_string($value),
+            'bool' => is_bool($value),
+            default => is_array($value),
+        };
+        if (!$valid) {
+            throw new UnexpectedValueException(
+                "Task '{$name}' payload has " . get_debug_type($value) . " for {$definition['scalar']} '{$parameter}'",
+            );
+        }
+        return $definition['scalar'] === 'float' && is_int($value) ? (float) $value : $value;
+    }
+
+    /**
      * @param class-string $class
-     * @return array<string,array{optional:bool,enum:class-string<BackedEnum>|null,scalar:string|null}>
+     * @return array<string,array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null}>
      */
     private static function parameters(string $class): array
     {
@@ -178,7 +212,7 @@ final class TaskRegistry
         if (!$reflection->isInstantiable()) {
             throw new InvalidArgumentException("Task {$class} cannot be instantiated");
         }
-        if (!$reflection->hasMethod('__invoke')) {
+        if (!$reflection->hasMethod('__invoke') || !$reflection->getMethod('__invoke')->isPublic()) {
             throw new InvalidArgumentException("Task {$class} is not invocable");
         }
 
@@ -191,7 +225,7 @@ final class TaskRegistry
 
     /**
      * @param class-string $class
-     * @return array{optional:bool,enum:class-string<BackedEnum>|null,scalar:string|null}
+     * @return array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null}
      */
     private static function parameter(string $class, ReflectionParameter $parameter): array
     {
@@ -212,18 +246,18 @@ final class TaskRegistry
             if (!in_array($typeName, self::SCALAR_TYPES, true)) {
                 throw new InvalidArgumentException("Task {$class} parameter '{$name}' cannot be stored as {$typeName}");
             }
-            return ['optional' => $parameter->isOptional(), 'enum' => null, 'scalar' => $typeName];
+            return ['optional' => $parameter->isOptional(), 'nullable' => $type->allowsNull(), 'enum' => null, 'scalar' => $typeName];
         }
         if (!is_subclass_of($typeName, BackedEnum::class)) {
             throw new InvalidArgumentException("Task {$class} parameter '{$name}' cannot be stored as {$typeName}");
         }
-        return ['optional' => $parameter->isOptional(), 'enum' => $typeName, 'scalar' => null];
+        return ['optional' => $parameter->isOptional(), 'nullable' => $type->allowsNull(), 'enum' => $typeName, 'scalar' => null];
     }
 
     private static function isDeduplicationParameter(TaskType $type, string $parameter): bool
     {
-        $scalar = $type->parameters[$parameter]['scalar'] ?? null;
-        return $scalar === 'string' || $scalar === 'int';
+        $definition = $type->parameters[$parameter] ?? null;
+        return $definition !== null && !$definition['nullable'] && in_array($definition['scalar'], ['string', 'int'], true);
     }
 
     /**

@@ -58,6 +58,15 @@ final class PlainParameterTask
     public function __invoke(): void {}
 }
 
+final readonly class NullableKeyTask
+{
+    public function __construct(
+        public ?string $eventId,
+    ) {}
+
+    public function __invoke(): void {}
+}
+
 final readonly class NotInvocableTask
 {
     public function __construct(
@@ -81,6 +90,18 @@ class TaskRegistryTest extends TestCase
             $encoded->payload,
         );
         $this->assertEquals($task, $registry->decode('test.typed', $encoded->payload));
+    }
+
+    public function testWholeFloatsStoredAsIntegersDecodeAsFloats(): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+
+        $task = $registry->decode('test.typed', '{"id":"a","count":1,"ratio":2,"urgent":true,"tags":[],"priority":"low"}');
+
+        $this->assertInstanceOf(TypedTask::class, $task);
+        $this->assertSame(2.0, $task->ratio);
+        $this->assertSame(TypedTask::class, $registry->type('test.typed')?->class);
+        $this->assertNull($registry->type('test.other'));
     }
 
     public function testMissingOptionalParametersTakeTheirDefault(): void
@@ -115,6 +136,10 @@ class TaskRegistryTest extends TestCase
         yield 'wrong type' => ['test.typed', '{"id":1,"count":1,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
         yield 'null for non-nullable' => ['test.typed', '{"id":null,"count":1,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
         yield 'unknown enum case' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":[],"priority":"urgent"}'];
+        yield 'int for bool' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":1,"tags":[],"priority":"low"}'];
+        yield 'float for int' => ['test.typed', '{"id":"a","count":1.5,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
+        yield 'string for array' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":"a","priority":"low"}'];
+        yield 'string for float' => ['test.typed', '{"id":"a","count":1,"ratio":"1","urgent":true,"tags":[],"priority":"low"}'];
     }
 
     #[DataProvider('invalidPayloads')]
@@ -152,6 +177,7 @@ class TaskRegistryTest extends TestCase
         yield 'union type' => ['test.union', UnionTask::class, null];
         yield 'not promoted' => ['test.plain', PlainParameterTask::class, null];
         yield 'not invocable' => ['test.not-invocable', NotInvocableTask::class, null];
+        yield 'deduplicate by nullable' => ['test.nullable', NullableKeyTask::class, 'eventId'];
         yield 'deduplicate by unknown' => ['test.record', RecordTask::class, 'missing'];
         yield 'deduplicate by float' => ['test.typed', TypedTask::class, 'ratio'];
     }
@@ -188,6 +214,24 @@ class TaskRegistryTest extends TestCase
 
         $this->assertSame([10, 30, 60, 60], array_map($retry->delayAfter(...), [1, 2, 3, 4]));
         $this->assertSame(1, RetryPolicy::never()->maxAttempts);
+    }
+
+    /**
+     * @return iterable<string,array{int,int,float,int}>
+     */
+    public static function invalidRetryPolicies(): iterable
+    {
+        yield 'no attempt' => [0, 10, 2.0, 60];
+        yield 'negative delay' => [3, -1, 2.0, 60];
+        yield 'cap below delay' => [3, 10, 2.0, 5];
+        yield 'shrinking' => [3, 10, 0.5, 60];
+    }
+
+    #[DataProvider('invalidRetryPolicies')]
+    public function testRetryPolicyValidatesItsBounds(int $maxAttempts, int $delay, float $multiplier, int $maxDelay): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new RetryPolicy($maxAttempts, $delay, $multiplier, $maxDelay);
     }
 
     public function testWorkerTimeoutMustBeShorterThanTheLease(): void

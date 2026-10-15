@@ -13,7 +13,7 @@ final readonly class TaskType
 {
     /**
      * @param class-string $class
-     * @param array<string,array{optional:bool,enum:class-string<BackedEnum>|null,scalar:string|null}> $parameters
+     * @param array<string,array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null}> $parameters
      */
     public function __construct(
         public string $name,
