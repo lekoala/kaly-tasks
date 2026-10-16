@@ -44,6 +44,11 @@ final class TaskRegistry
     private array $byClass = [];
 
     /**
+     * @var array<string,array<string,array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null}>> By name
+     */
+    private array $parameters = [];
+
+    /**
      * @param class-string $class
      * @param string|null $deduplicateBy A non-nullable string or int parameter: a task whose
      *  value is already stored under this name is not stored again
@@ -68,15 +73,17 @@ final class TaskRegistry
             throw new InvalidArgumentException("Task '{$name}' needs a queue name");
         }
 
-        $type = new TaskType($name, $class, $queue, $retry, self::parameters($class), $deduplicateBy);
-        if ($deduplicateBy !== null && !self::isDeduplicationParameter($type, $deduplicateBy)) {
+        $parameters = self::parameters($class);
+        if ($deduplicateBy !== null && !self::isDeduplicationParameter($parameters, $deduplicateBy)) {
             throw new InvalidArgumentException(
                 "Task {$class} deduplicates by '{$deduplicateBy}', which must be a non-nullable string or int parameter",
             );
         }
 
+        $type = new TaskType($name, $class, $queue, $retry, $deduplicateBy);
         $this->byName[$name] = $type;
         $this->byClass[$class] = $type;
+        $this->parameters[$name] = $parameters;
         return $this;
     }
 
@@ -96,7 +103,7 @@ final class TaskRegistry
         }
 
         $data = [];
-        foreach ($type->parameters as $parameter => $_) {
+        foreach ($this->parameters[$type->name] as $parameter => $_) {
             $value = $task->{$parameter};
             if ($value instanceof BackedEnum) {
                 $value = $value->value;
@@ -140,13 +147,13 @@ final class TaskRegistry
             throw new UnexpectedValueException("Task '{$name}' payload must be a JSON object");
         }
 
-        $unknown = array_diff(array_keys($data), array_keys($type->parameters));
+        $unknown = array_diff(array_keys($data), array_keys($this->parameters[$name]));
         if ($unknown !== []) {
             throw new UnexpectedValueException("Task '{$name}' payload has unknown keys: " . implode(', ', $unknown));
         }
 
         $arguments = [];
-        foreach ($type->parameters as $parameter => $definition) {
+        foreach ($this->parameters[$name] as $parameter => $definition) {
             if (!array_key_exists($parameter, $data)) {
                 if ($definition['optional']) {
                     continue;
@@ -258,9 +265,12 @@ final class TaskRegistry
         return ['optional' => $parameter->isOptional(), 'nullable' => $type->allowsNull(), 'enum' => $typeName, 'scalar' => null];
     }
 
-    private static function isDeduplicationParameter(TaskType $type, string $parameter): bool
+    /**
+     * @param array<string,array{optional:bool,nullable:bool,enum:class-string<BackedEnum>|null,scalar:string|null}> $parameters
+     */
+    private static function isDeduplicationParameter(array $parameters, string $parameter): bool
     {
-        $definition = $type->parameters[$parameter] ?? null;
+        $definition = $parameters[$parameter] ?? null;
         return $definition !== null && !$definition['nullable'] && in_array($definition['scalar'], ['string', 'int'], true);
     }
 

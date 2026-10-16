@@ -22,12 +22,19 @@ use UnexpectedValueException;
  */
 final readonly class PostgresTaskStore implements TaskStore
 {
+    // 63 bytes minus the longest index suffix, "_pending"
+    private const MAX_TABLE_LENGTH = 55;
+
     public function __construct(
         private Connection $connection,
         private string $table = 'kaly_tasks',
     ) {
         if (preg_match('/^(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*$/', $table) !== 1) {
             throw new InvalidArgumentException("Table name '{$table}' must be a lowercase identifier, optionally schema-qualified");
+        }
+        // PostgreSQL truncates identifiers to 63 bytes: index names must stay distinct
+        if (strlen($table) > self::MAX_TABLE_LENGTH) {
+            throw new InvalidArgumentException("Table name '{$table}' must be at most " . self::MAX_TABLE_LENGTH . ' characters');
         }
     }
 

@@ -243,6 +243,13 @@ class TaskRegistryTest extends TestCase
         $this->assertSame(1, RetryPolicy::never()->maxAttempts);
     }
 
+    public function testRetryPolicyWithoutDelaySurvivesOverflow(): void
+    {
+        // 2^1100 overflows to INF
+        $this->assertSame(0, (new RetryPolicy(maxAttempts: 2000, delay: 0, maxDelay: 60))->delayAfter(1100));
+        $this->assertSame(60, (new RetryPolicy(maxAttempts: 2000, delay: 1, maxDelay: 60))->delayAfter(1100));
+    }
+
     /**
      * @return iterable<string,array{int,int,float,int}>
      */

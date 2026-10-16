@@ -42,6 +42,10 @@ final readonly class RetryPolicy
      */
     public function delayAfter(int $attempt): int
     {
+        // The power overflows to INF after many attempts, and 0 * INF is NAN
+        if ($this->delay === 0) {
+            return 0;
+        }
         return (int) min($this->maxDelay, $this->delay * ($this->multiplier ** max(0, $attempt - 1)));
     }
 }
