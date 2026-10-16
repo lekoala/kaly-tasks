@@ -7,23 +7,27 @@ namespace Kaly\Tasks\Tests;
 use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\TaskRegistry;
 use Kaly\Tasks\Tests\Fixtures\SleepTask;
-use PHPUnit\Framework\Attributes\RequiresFunction;
 
 /**
  * Signals and hard timeouts, in a real worker process. Requires ext-pcntl.
  */
-#[RequiresFunction('pcntl_async_signals')]
-class SignalTest extends PostgresTestCase
+abstract class SignalTestCase extends StoreTestCase
 {
+    protected function setUp(): void
+    {
+        // An attribute on this abstract class would not reach the engine classes
+        if (!function_exists('pcntl_async_signals')) {
+            $this->markTestSkipped('Requires ext-pcntl');
+        }
+        parent::setUp();
+    }
+
     /**
      * @return array{resource,array<int,resource>}
      */
     private function startWorker(int $timeout): array
     {
-        $command = [PHP_BINARY, __DIR__ . '/Fixtures/signal-worker.php', self::dsn(), self::TABLE, (string) $timeout];
-        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-        $this->assertIsResource($process);
-        return [$process, $pipes];
+        return $this->startProcess('signal-worker.php', [(string) $timeout]);
     }
 
     private function dispatch(int ...$seconds): void

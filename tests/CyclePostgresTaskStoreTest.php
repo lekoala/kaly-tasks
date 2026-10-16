@@ -13,6 +13,6 @@ final class CyclePostgresTaskStoreTest extends PostgresTaskStoreTest
 {
     protected function connection(): Connection
     {
-        return $this->viaCycle()['connection'];
+        return $this->postgres()->viaCycle()['connection'];
     }
 }

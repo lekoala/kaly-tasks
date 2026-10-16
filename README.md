@@ -3,8 +3,9 @@
 A durable SQL task queue for [Kaly](https://github.com/lekoala/kaly) tasks.
 
 Kaly defines the task model and the `Kaly\Task\TaskDispatcher` contract. This
-package is one optional engine: it stores tasks in PostgreSQL and runs them in
-supervised worker processes. Application code does not change:
+package is one optional engine: it stores tasks in PostgreSQL or SQLite and
+runs them in supervised worker processes. A durable task queue without a queue
+server. Application code does not change:
 
 ```php
 $this->tasks->dispatch(new GeneratePdf($documentId));
@@ -68,6 +69,43 @@ changed data.
 
 The worker always uses its own connection to the queue database.
 
+## Stores
+
+Both stores give the same guarantees and pass the same test suite. Use the
+database the application already has: on the application connection, a
+dispatch joins the business transaction.
+
+| | `PostgresTaskStore` | `SqliteTaskStore` |
+|---|---|---|
+| Hosts | Workers on any number of hosts | The application and its workers on one host |
+| Reservation | `FOR UPDATE SKIP LOCKED`: workers never wait for each other | One short `UPDATE … RETURNING`: reservations queue up, task runs do not |
+| Clock | The database clock | The host clock, in whole seconds |
+| Requires | PostgreSQL | SQLite 3.38 through pdo_sqlite |
+
+The SQLite store does not support ext-sqlite3 (Doctrine's `sqlite3` driver):
+it runs a statement again when its rows are fetched, so a reservation would
+claim a second task. `DoctrineConnection` refuses that driver. See the PHP
+bugs:
+
+- [#64531](https://bugs.php.net/bug.php?id=64531): `SQLite3Result::fetchArray()`
+  may run the query again;
+- [#81376](https://bugs.php.net/bug.php?id=81376): it explicitly affects
+  `UPDATE … RETURNING`.
+
+SQLite serializes writes, not tasks: a worker holds no lock while its task
+runs, so several workers process tasks in parallel. Contention only shows with
+many concurrent writes or long application transactions. The store leaves the
+connection settings to you:
+
+- a file on a local disk, never on a network share, in WAL mode
+  (`PRAGMA journal_mode = WAL`);
+- a busy timeout on every connection (pdo_sqlite waits 60s by default,
+  `PDO::ATTR_TIMEOUT`);
+- `PRAGMA synchronous = FULL` if a power loss must not lose the last
+  dispatched tasks (WAL with `NORMAL` may);
+- backups taken with `VACUUM INTO` or the SQLite backup API, not by copying
+  the file.
+
 ## Connections
 
 The store needs two operations, behind `Kaly\Tasks\Connection\Connection`:
@@ -93,7 +131,7 @@ foreach ($store->schema() as $statement) {
 ```
 
 `PostgresTaskStore` takes a table name, optionally schema-qualified
-(`queue.tasks`).
+(`queue.tasks`). `SqliteTaskStore` takes a plain table name.
 
 Register the persistable types and wire the dispatcher in the composition root:
 
@@ -164,7 +202,8 @@ re-entrant, and stateful resources (EntityManager, unit of work) are opened by
 the operation that uses them, as for a request. A task never receives an HTTP
 context: identity and authorization travel in its data and are checked again.
 
-Leases and delays use the database clock, so workers on several hosts agree.
+With PostgreSQL, leases and delays use the database clock, so workers on
+several hosts agree.
 
 ## Maintenance
 
@@ -185,5 +224,6 @@ docker compose up -d   # PostgreSQL on port 55432
 composer test
 ```
 
-Set `KALY_TASKS_PGSQL_DSN` to another database, or empty to skip the database
-tests.
+Every suite runs against both stores. The SQLite tests use temporary files
+and always run; set `KALY_TASKS_PGSQL_DSN` to another database, or empty to
+skip the PostgreSQL tests.

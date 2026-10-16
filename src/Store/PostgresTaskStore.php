@@ -7,7 +7,6 @@ namespace Kaly\Tasks\Store;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\EncodedTask;
-use UnexpectedValueException;
 
 /**
  * PostgreSQL task store.
@@ -24,8 +23,6 @@ final readonly class PostgresTaskStore implements TaskStore
 {
     // 63 bytes minus the longest index suffix, "_pending"
     private const MAX_TABLE_LENGTH = 55;
-    // Bytes of an error kept in last_error
-    private const MAX_ERROR_LENGTH = 4096;
 
     public function __construct(
         private Connection $connection,
@@ -87,7 +84,7 @@ final readonly class PostgresTaskStore implements TaskStore
         if ($queues === []) {
             throw new InvalidArgumentException('Reserve needs at least one queue');
         }
-        self::assertDuration($leaseSeconds, 'The lease', 1);
+        StoreValues::assertDuration($leaseSeconds, 'The lease', 1);
         $placeholders = implode(', ', array_fill(0, count($queues), '?'));
         $row = $this->connection->fetchAll("WITH next AS (
                 SELECT id FROM {$this->table}
@@ -102,16 +99,7 @@ final readonly class PostgresTaskStore implements TaskStore
             FROM next WHERE t.id = next.id
             RETURNING t.id, t.name, CAST(t.payload AS TEXT) AS payload, t.attempts", [...$queues, $owner, $leaseSeconds])[0] ?? null;
 
-        if ($row === null) {
-            return null;
-        }
-        return new ReservedTask(
-            self::int($row['id']),
-            self::string($row['name']),
-            self::string($row['payload']),
-            self::int($row['attempts']),
-            $owner,
-        );
+        return $row === null ? null : StoreValues::reserved($row, $owner);
     }
 
     public function complete(ReservedTask $task): bool
@@ -126,13 +114,13 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function release(ReservedTask $task, int $delaySeconds, string $error): bool
     {
-        self::assertDuration($delaySeconds, 'The retry delay');
+        StoreValues::assertDuration($delaySeconds, 'The retry delay');
         return $this->connection->execute(
             "UPDATE {$this->table}
             SET status = 'pending', owner = NULL, lease_until = NULL, last_error = ?,
                 available_at = now() + CAST(? AS INTEGER) * INTERVAL '1 second'
             WHERE id = ? AND owner = ? AND status = 'running'",
-            [self::error($error), $delaySeconds, $task->id, $task->owner],
+            [StoreValues::error($error), $delaySeconds, $task->id, $task->owner],
         ) === 1;
     }
 
@@ -142,7 +130,7 @@ final readonly class PostgresTaskStore implements TaskStore
             "UPDATE {$this->table}
             SET status = 'failed', owner = NULL, lease_until = NULL, last_error = ?, finished_at = now()
             WHERE id = ? AND owner = ? AND status = 'running'",
-            [self::error($error), $task->id, $task->owner],
+            [StoreValues::error($error), $task->id, $task->owner],
         ) === 1;
     }
 
@@ -155,20 +143,13 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function failed(int $limit = 50): array
     {
-        self::assertDuration($limit, 'The limit', 1);
+        StoreValues::assertDuration($limit, 'The limit', 1);
         $rows = $this->connection->fetchAll(
             "SELECT id, queue, name, CAST(payload AS TEXT) AS payload, attempts, last_error FROM {$this->table}
             WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT CAST(? AS INTEGER)",
             [$limit],
         );
-        return array_map(static fn(array $row): array => [
-            'id' => self::int($row['id']),
-            'queue' => self::string($row['queue']),
-            'name' => self::string($row['name']),
-            'payload' => self::string($row['payload']),
-            'attempts' => self::int($row['attempts']),
-            'error' => $row['last_error'] === null ? null : self::string($row['last_error']),
-        ], $rows);
+        return array_map(StoreValues::failed(...), $rows);
     }
 
     public function retryFailed(int $id): bool
@@ -180,9 +161,9 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int
     {
-        self::assertDuration($olderThanSeconds, 'The done retention');
+        StoreValues::assertDuration($olderThanSeconds, 'The done retention');
         if ($failedOlderThanSeconds !== null) {
-            self::assertDuration($failedOlderThanSeconds, 'The failed retention');
+            StoreValues::assertDuration($failedOlderThanSeconds, 'The failed retention');
         }
         $deleted = $this->connection->execute("DELETE FROM {$this->table}
             WHERE status = 'done' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$olderThanSeconds]);
@@ -191,55 +172,5 @@ final readonly class PostgresTaskStore implements TaskStore
                 WHERE status = 'failed' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$failedOlderThanSeconds]);
         }
         return $deleted;
-    }
-
-    /**
-     * Errors often embed outside data: invalid UTF-8 would make the settlement
-     * fail, and an unbounded message would bloat the table.
-     */
-    private static function error(string $error): string
-    {
-        if (preg_match('//u', $error) !== 1) {
-            $error = (string) preg_replace('/[\x80-\xFF]/', '?', $error);
-        }
-        $error = str_replace("\0", '', $error);
-        if (strlen($error) <= self::MAX_ERROR_LENGTH) {
-            return $error;
-        }
-        $error = substr($error, 0, self::MAX_ERROR_LENGTH - strlen('…'));
-        // Drops a multibyte character cut in half
-        while (preg_match('//u', $error) !== 1) {
-            $error = substr($error, 0, -1);
-        }
-        return $error . '…';
-    }
-
-    /**
-     * Durations and limits are bound as SQL INTEGER.
-     */
-    private static function assertDuration(int $value, string $what, int $min = 0): void
-    {
-        if ($value < $min || $value > 2_147_483_647) {
-            throw new InvalidArgumentException("{$what} must be between {$min} and 2147483647, got {$value}");
-        }
-    }
-
-    /**
-     * Drivers return integers as int or numeric string.
-     */
-    private static function int(mixed $value): int
-    {
-        if (is_int($value) || is_string($value) && is_numeric($value)) {
-            return (int) $value;
-        }
-        throw new UnexpectedValueException('Expected an integer column, got ' . get_debug_type($value));
-    }
-
-    private static function string(mixed $value): string
-    {
-        if (!is_string($value)) {
-            throw new UnexpectedValueException('Expected a text column, got ' . get_debug_type($value));
-        }
-        return $value;
     }
 }

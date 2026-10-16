@@ -19,6 +19,12 @@
   delays, limits and retentions are rejected before reaching SQL, and so are
   table names too long for distinct index names. Errors are stored as valid
   UTF-8, bounded to 4 KiB.
+- `Kaly\Tasks\Store\SqliteTaskStore` gives the same guarantees on one host:
+  a reservation is a single `UPDATE … RETURNING`, so workers run tasks in
+  parallel while SQLite serializes the short writes. Requires SQLite 3.38
+  through pdo_sqlite: `DoctrineConnection` refuses the `sqlite3` driver, as
+  ext-sqlite3 runs a statement again when its rows are fetched (PHP bugs
+  #64531 and #81376).
 - `Kaly\Tasks\Worker` runs tasks through the Kaly Injector, recovers expired
   leases, recycles itself and handles signals and hard timeouts with
   ext-pcntl. The attempt budget is checked before a task is rebuilt, and the

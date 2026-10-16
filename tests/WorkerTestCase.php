@@ -84,7 +84,7 @@ final class ConstructorCountingTask
     public function __invoke(): void {}
 }
 
-class WorkerTest extends PostgresTestCase
+abstract class WorkerTestCase extends StoreTestCase
 {
     private Journal $journal;
 
@@ -95,6 +95,13 @@ class WorkerTest extends PostgresTestCase
     private Worker $worker;
 
     private DatabaseTaskDispatcher $tasks;
+
+    protected function tearDown(): void
+    {
+        // The worker and the container hold the PDO handle
+        unset($this->worker, $this->tasks);
+        parent::tearDown();
+    }
 
     protected function setUp(): void
     {

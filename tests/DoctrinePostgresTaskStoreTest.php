@@ -13,6 +13,6 @@ final class DoctrinePostgresTaskStoreTest extends PostgresTaskStoreTest
 {
     protected function connection(): Connection
     {
-        return $this->viaDoctrine()['connection'];
+        return $this->postgres()->viaDoctrine()['connection'];
     }
 }

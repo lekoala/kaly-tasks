@@ -10,6 +10,7 @@ use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\TaskRegistry;
+use Kaly\Tasks\Tests\Engine\OnPostgres;
 use Kaly\Tasks\Tests\Fixtures\RecordTask;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -17,8 +18,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * The outbox guarantee through each supported connection: a task dispatched
  * inside the application transaction commits and rolls back with it.
  */
-class ConnectionTest extends PostgresTestCase
+class ConnectionTest extends StoreTestCase
 {
+    use OnPostgres;
+
     /**
      * @return iterable<string,array{string}>
      */
@@ -33,9 +36,9 @@ class ConnectionTest extends PostgresTestCase
     public function testDispatchJoinsTheApplicationTransaction(string $library): void
     {
         $application = match ($library) {
-            'pdo' => $this->viaPdo(),
-            'doctrine' => $this->viaDoctrine(),
-            default => $this->viaCycle(),
+            'pdo' => $this->postgres()->viaPdo(),
+            'doctrine' => $this->postgres()->viaDoctrine(),
+            default => $this->postgres()->viaCycle(),
         };
         $store = new PostgresTaskStore($application['connection'], self::TABLE);
         $tasks = new DatabaseTaskDispatcher($store, (new TaskRegistry())->register('test.record', RecordTask::class));
@@ -60,14 +63,7 @@ class ConnectionTest extends PostgresTestCase
 
     public function testDoctrineReservesOnThePrimary(): void
     {
-        $dsn = self::dsnParts();
-        $params = [
-            'host' => $dsn['host'],
-            'port' => (int) $dsn['port'],
-            'dbname' => $dsn['dbname'],
-            'user' => $dsn['user'],
-            'password' => $dsn['password'],
-        ];
+        $params = $this->postgres()->doctrineParams();
         $dbal = DriverManager::getConnection([
             'wrapperClass' => PrimaryReadReplicaConnection::class,
             'driver' => 'pdo_pgsql',

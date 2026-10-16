@@ -12,7 +12,7 @@
     </source>
     <php>
         <ini name="assert.exception" value="1"/>
-        <!-- PostgreSQL from compose.yaml; set it empty to skip the database tests -->
+        <!-- PostgreSQL from compose.yaml; set it empty to skip the PostgreSQL tests -->
         <env name="KALY_TASKS_PGSQL_DSN" value="pgsql:host=127.0.0.1;port=55432;dbname=kaly_tasks;user=kaly;password=kaly" force="false"/>
     </php>
 </phpunit>

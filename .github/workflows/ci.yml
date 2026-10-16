@@ -36,7 +36,7 @@ jobs:
         with:
           php-version: "8.3"
           ini-values: zend.assertions=1
-          extensions: pdo_pgsql, pcntl
+          extensions: pdo_pgsql, pdo_sqlite, pcntl
           coverage: none
           tools: composer:v2
 
