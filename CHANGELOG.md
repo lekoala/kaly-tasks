@@ -17,7 +17,8 @@
   failed tasks and purge. Payloads are stored as `JSON`, not `JSONB`, so the
   stored text is kept verbatim (key order, `\u0000`). Out-of-range leases,
   delays, limits and retentions are rejected before reaching SQL, and so are
-  table names too long for distinct index names.
+  table names too long for distinct index names. Errors are stored as valid
+  UTF-8, bounded to 4 KiB.
 - `Kaly\Tasks\Worker` runs tasks through the Kaly Injector, recovers expired
   leases, recycles itself and handles signals and hard timeouts with
   ext-pcntl. The attempt budget is checked before a task is rebuilt, and the

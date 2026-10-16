@@ -24,6 +24,8 @@ final readonly class PostgresTaskStore implements TaskStore
 {
     // 63 bytes minus the longest index suffix, "_pending"
     private const MAX_TABLE_LENGTH = 55;
+    // Bytes of an error kept in last_error
+    private const MAX_ERROR_LENGTH = 4096;
 
     public function __construct(
         private Connection $connection,
@@ -130,7 +132,7 @@ final readonly class PostgresTaskStore implements TaskStore
             SET status = 'pending', owner = NULL, lease_until = NULL, last_error = ?,
                 available_at = now() + CAST(? AS INTEGER) * INTERVAL '1 second'
             WHERE id = ? AND owner = ? AND status = 'running'",
-            [$error, $delaySeconds, $task->id, $task->owner],
+            [self::error($error), $delaySeconds, $task->id, $task->owner],
         ) === 1;
     }
 
@@ -140,7 +142,7 @@ final readonly class PostgresTaskStore implements TaskStore
             "UPDATE {$this->table}
             SET status = 'failed', owner = NULL, lease_until = NULL, last_error = ?, finished_at = now()
             WHERE id = ? AND owner = ? AND status = 'running'",
-            [$error, $task->id, $task->owner],
+            [self::error($error), $task->id, $task->owner],
         ) === 1;
     }
 
@@ -189,6 +191,27 @@ final readonly class PostgresTaskStore implements TaskStore
                 WHERE status = 'failed' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$failedOlderThanSeconds]);
         }
         return $deleted;
+    }
+
+    /**
+     * Errors often embed outside data: invalid UTF-8 would make the settlement
+     * fail, and an unbounded message would bloat the table.
+     */
+    private static function error(string $error): string
+    {
+        if (preg_match('//u', $error) !== 1) {
+            $error = (string) preg_replace('/[\x80-\xFF]/', '?', $error);
+        }
+        $error = str_replace("\0", '', $error);
+        if (strlen($error) <= self::MAX_ERROR_LENGTH) {
+            return $error;
+        }
+        $error = substr($error, 0, self::MAX_ERROR_LENGTH - strlen('…'));
+        // Drops a multibyte character cut in half
+        while (preg_match('//u', $error) !== 1) {
+            $error = substr($error, 0, -1);
+        }
+        return $error . '…';
     }
 
     /**

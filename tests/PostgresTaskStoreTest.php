@@ -83,7 +83,7 @@ class PostgresTaskStoreTest extends PostgresTestCase
     {
         $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
         // JSONB would reorder these keys and reject the NUL escape
-        $task = new TypedTask('doc-1', 1, 0.5, false, ['zz' => 1, 'a' => ['y' => 2, 'b' => 3], 'nul' . chr(0) => chr(0)], Priority::Low);
+        $task = new TypedTask('doc-1', 1, 0.5, false, ['zz' => 1, 'a' => ['y' => 2, 'b' => 3], "nul\0" => "\0"], Priority::Low);
         $this->store->push($registry->encode($task));
 
         $reserved = $this->reserve();
@@ -93,6 +93,22 @@ class PostgresTaskStoreTest extends PostgresTestCase
         $decoded = $registry->decode($reserved->name, $reserved->payload);
         $this->assertInstanceOf(TypedTask::class, $decoded);
         $this->assertSame($task->tags, $decoded->tags);
+    }
+
+    public function testErrorsAreStoredAsBoundedValidText(): void
+    {
+        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $this->store->push(new EncodedTask('b', 'default', '{}'));
+
+        $this->assertTrue($this->store->fail($this->reserve() ?? $this->fail('No task'), "Bad \xFF byte\0"));
+        $this->assertTrue($this->store->release($this->reserve() ?? $this->fail('No task'), 0, str_repeat('é', 3000)));
+
+        $this->assertSame('Bad ? byte', $this->row(1)['last_error']);
+        $error = $this->row(2)['last_error'];
+        $this->assertIsString($error);
+        // A cut multibyte character is dropped
+        $this->assertSame(4095, strlen($error));
+        $this->assertStringEndsWith('é…', $error);
     }
 
     public function testReservesOnlyTheRequestedQueues(): void
