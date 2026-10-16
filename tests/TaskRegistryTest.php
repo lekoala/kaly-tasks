@@ -166,6 +166,33 @@ class TaskRegistryTest extends TestCase
         $registry->encode(new TypedTask('a', 1, 1.0, true, [new Journal()], Priority::Low));
     }
 
+    public function testEncodeRejectsRecursiveArrays(): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+        $tags = [];
+        $tags['self'] = &$tags;
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("parameter 'tags' nests arrays deeper than the JSON limit of 512 levels");
+        $registry->encode(new TypedTask('a', 1, 1.0, true, $tags, Priority::Low));
+    }
+
+    public function testEncodeAcceptsArraysUpToTheJsonLimit(): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+        // The payload object and the tags array take two levels
+        $tags = [];
+        for ($i = 0; $i < 510; $i++) {
+            $tags = [$tags];
+        }
+        $task = new TypedTask('a', 1, 1.0, true, $tags, Priority::Low);
+
+        $this->assertEquals($task, $registry->decode('test.typed', $registry->encode($task)->payload));
+
+        $this->expectException(InvalidArgumentException::class);
+        $registry->encode(new TypedTask('a', 1, 1.0, true, [$tags], Priority::Low));
+    }
+
     /**
      * @return iterable<string,array{string,class-string,string|null}>
      */

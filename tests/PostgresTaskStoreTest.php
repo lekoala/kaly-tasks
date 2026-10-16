@@ -9,6 +9,9 @@ use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\EncodedTask;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\Store\ReservedTask;
+use Kaly\Tasks\TaskRegistry;
+use Kaly\Tasks\Tests\Fixtures\Priority;
+use Kaly\Tasks\Tests\Fixtures\TypedTask;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 class PostgresTaskStoreTest extends PostgresTestCase
@@ -61,10 +64,26 @@ class PostgresTaskStoreTest extends PostgresTestCase
         $first = $this->reserve();
         $second = $this->reserve(owner: 'owner-b');
 
-        $this->assertSame(['a', '{"n": 1}', 1, 'owner-a'], [$first?->name, $first?->payload, $first?->attempts, $first?->owner]);
+        $this->assertSame(['a', '{"n":1}', 1, 'owner-a'], [$first?->name, $first?->payload, $first?->attempts, $first?->owner]);
         $this->assertSame('b', $second?->name);
         $this->assertNull($this->reserve());
         $this->assertSame(2, $this->countTasks('running'));
+    }
+
+    public function testPayloadsRoundTripVerbatim(): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+        // JSONB would reorder these keys and reject the NUL escape
+        $task = new TypedTask('doc-1', 1, 0.5, false, ['zz' => 1, 'a' => ['y' => 2, 'b' => 3], 'nul' . chr(0) => chr(0)], Priority::Low);
+        $this->store->push($registry->encode($task));
+
+        $reserved = $this->reserve();
+
+        $this->assertNotNull($reserved);
+        $this->assertSame($registry->encode($task)->payload, $reserved->payload);
+        $decoded = $registry->decode($reserved->name, $reserved->payload);
+        $this->assertInstanceOf(TypedTask::class, $decoded);
+        $this->assertSame($task->tags, $decoded->tags);
     }
 
     public function testReservesOnlyTheRequestedQueues(): void
@@ -150,7 +169,7 @@ class PostgresTaskStoreTest extends PostgresTestCase
         $this->store->fail($task, 'Broken');
 
         $this->assertSame(
-            [['id' => $task->id, 'queue' => 'default', 'name' => 'a', 'payload' => '{"n": 1}', 'attempts' => 1, 'error' => 'Broken']],
+            [['id' => $task->id, 'queue' => 'default', 'name' => 'a', 'payload' => '{"n":1}', 'attempts' => 1, 'error' => 'Broken']],
             $this->store->failed(),
         );
         $this->assertTrue($this->store->retryFailed($task->id));

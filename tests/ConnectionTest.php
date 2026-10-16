@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use Doctrine\DBAL\Connections\PrimaryReadReplicaConnection;
+use Doctrine\DBAL\DriverManager;
+use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\TaskRegistry;
@@ -50,8 +53,34 @@ class ConnectionTest extends PostgresTestCase
 
         $reserved = $store->reserve(['default'], 'owner', 60);
         $this->assertNotNull($reserved);
-        $this->assertSame(['test.record', '{"entry": "committed"}'], [$reserved->name, $reserved->payload]);
+        $this->assertSame(['test.record', '{"entry":"committed"}'], [$reserved->name, $reserved->payload]);
         $store->fail($reserved, 'Broken');
         $this->assertSame([$reserved->id], array_column($store->failed(10), 'id'));
+    }
+
+    public function testDoctrineReservesOnThePrimary(): void
+    {
+        $dsn = self::dsnParts();
+        $params = [
+            'host' => $dsn['host'],
+            'port' => (int) $dsn['port'],
+            'dbname' => $dsn['dbname'],
+            'user' => $dsn['user'],
+            'password' => $dsn['password'],
+        ];
+        $dbal = DriverManager::getConnection([
+            'wrapperClass' => PrimaryReadReplicaConnection::class,
+            'driver' => 'pdo_pgsql',
+            'primary' => $params,
+            'replica' => [$params],
+            'keepReplica' => true,
+        ]);
+        $this->assertInstanceOf(PrimaryReadReplicaConnection::class, $dbal);
+        $dbal->ensureConnectedToReplica();
+
+        $store = new PostgresTaskStore(new DoctrineConnection($dbal), self::TABLE);
+        $this->assertNull($store->reserve(['default'], 'owner', 60));
+
+        $this->assertTrue($dbal->isConnectedToPrimary());
     }
 }

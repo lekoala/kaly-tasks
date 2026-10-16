@@ -12,7 +12,8 @@ namespace Kaly\Tasks\Connection;
  * give a dedicated database and the queue stays out of the application schema,
  * without that atomicity.
  *
- * Statements use positional `?` placeholders.
+ * Statements use positional `?` placeholders. Every statement, reads included,
+ * runs on the primary: `fetchAll()` also reserves tasks.
  */
 interface Connection
 {

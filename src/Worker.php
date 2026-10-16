@@ -110,19 +110,12 @@ final class Worker
     private function process(ReservedTask $reserved, int $timeout): void
     {
         $context = ['id' => $reserved->id, 'task' => $reserved->name, 'attempt' => $reserved->attempts];
-
-        try {
-            $task = $this->registry->decode($reserved->name, $reserved->payload);
-        } catch (Throwable $e) {
-            $this->logger->error('Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);
-            $this->settled($this->store->fail($reserved, $e->getMessage()), $context);
-            return;
-        }
-        // decode() succeeded, so the type is registered
+        // An unknown type fails to decode below, whatever its attempts
         $type = $this->registry->type($reserved->name);
         $retry = $type === null ? RetryPolicy::never() : $type->retry;
 
-        if ($reserved->attempts > $retry->maxAttempts) {
+        // Checked before decoding: a constructor that kills the worker must not run forever
+        if ($type !== null && $reserved->attempts > $retry->maxAttempts) {
             // Previous attempts never settled: their worker died or exceeded its lease
             $this->logger->error('Task {task} #{id} exceeded {max} attempts', $context + ['max' => $retry->maxAttempts]);
             $this->settled($this->store->fail($reserved, "Exceeded {$retry->maxAttempts} attempts"), $context);
@@ -134,6 +127,14 @@ final class Worker
             pcntl_alarm($timeout);
         }
         try {
+            // The constructor runs under the timeout too
+            try {
+                $task = $this->registry->decode($reserved->name, $reserved->payload);
+            } catch (Throwable $e) {
+                $this->logger->error('Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);
+                $this->settled($this->store->fail($reserved, $e->getMessage()), $context);
+                return;
+            }
             // Registration guarantees __invoke()
             assert(is_callable($task));
             $this->injector->invoke($task);

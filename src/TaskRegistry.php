@@ -30,6 +30,8 @@ final class TaskRegistry
 {
     private const NAME_PATTERN = '/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/';
     private const SCALAR_TYPES = ['int', 'float', 'string', 'bool', 'array'];
+    // The JSON nesting limit, payload object included
+    private const MAX_DEPTH = 512;
 
     /**
      * @var array<string,TaskType> By name
@@ -99,7 +101,7 @@ final class TaskRegistry
             if ($value instanceof BackedEnum) {
                 $value = $value->value;
             } elseif (is_array($value)) {
-                self::assertPlainArray($value, $task::class, $parameter);
+                self::assertPlainArray($value, $task::class, $parameter, 2);
             }
             $data[$parameter] = $value;
         }
@@ -108,6 +110,7 @@ final class TaskRegistry
             $payload = json_encode(
                 $data,
                 JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                self::MAX_DEPTH,
             );
         } catch (JsonException $e) {
             throw new InvalidArgumentException('Task ' . $task::class . " cannot be encoded: {$e->getMessage()}", 0, $e);
@@ -128,7 +131,8 @@ final class TaskRegistry
         }
 
         try {
-            $data = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            // json_decode() counts one level more than json_encode() for the same value
+            $data = json_decode($payload, true, self::MAX_DEPTH + 1, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
             throw new UnexpectedValueException("Task '{$name}' has an invalid payload: {$e->getMessage()}", 0, $e);
         }
@@ -261,13 +265,20 @@ final class TaskRegistry
     }
 
     /**
+     * The depth bound also stops on a recursive array, before json_encode().
+     *
      * @param array<mixed> $value
      */
-    private static function assertPlainArray(array $value, string $class, string $parameter): void
+    private static function assertPlainArray(array $value, string $class, string $parameter, int $depth): void
     {
+        if ($depth > self::MAX_DEPTH) {
+            throw new InvalidArgumentException(
+                "Task {$class} parameter '{$parameter}' nests arrays deeper than the JSON limit of " . self::MAX_DEPTH . ' levels',
+            );
+        }
         foreach ($value as $item) {
             if (is_array($item)) {
-                self::assertPlainArray($item, $class, $parameter);
+                self::assertPlainArray($item, $class, $parameter, $depth + 1);
             } elseif ($item !== null && !is_scalar($item)) {
                 throw new InvalidArgumentException("Task {$class} parameter '{$parameter}' must only contain scalars, null and arrays");
             }

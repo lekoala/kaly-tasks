@@ -16,6 +16,9 @@ use UnexpectedValueException;
  * number of them can poll the same table without blocking each other. Leases
  * and delays use the database clock: workers on several hosts share one time
  * authority.
+ *
+ * Payloads are stored as JSON, not JSONB: the text is kept verbatim, with the
+ * key order of PHP arrays and `\u0000` escapes that JSONB would drop or reject.
  */
 final readonly class PostgresTaskStore implements TaskStore
 {
@@ -42,7 +45,7 @@ final readonly class PostgresTaskStore implements TaskStore
                 id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 queue TEXT NOT NULL,
                 name TEXT NOT NULL,
-                payload JSONB NOT NULL,
+                payload JSON NOT NULL,
                 dedup_key TEXT,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -64,7 +67,7 @@ final readonly class PostgresTaskStore implements TaskStore
     public function push(EncodedTask $task): bool
     {
         return $this->connection->execute(
-            "INSERT INTO {$this->table} (queue, name, payload, dedup_key) VALUES (?, ?, CAST(? AS JSONB), ?)
+            "INSERT INTO {$this->table} (queue, name, payload, dedup_key) VALUES (?, ?, CAST(? AS JSON), ?)
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
             [$task->queue, $task->name, $task->payload, $task->deduplicationKey],
         ) === 1;

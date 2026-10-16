@@ -71,6 +71,19 @@ final readonly class StopWorkerTask
     }
 }
 
+final class ConstructorCountingTask
+{
+    public static int $constructed = 0;
+
+    public function __construct(
+        public readonly string $entry,
+    ) {
+        self::$constructed++;
+    }
+
+    public function __invoke(): void {}
+}
+
 class WorkerTest extends PostgresTestCase
 {
     private Journal $journal;
@@ -92,7 +105,8 @@ class WorkerTest extends PostgresTestCase
             ->register('test.record', RecordTask::class, retry: new RetryPolicy(maxAttempts: 2, delay: 0))
             ->register('test.steal', StealLeaseTask::class)
             ->register('test.steal-fail', StealThenFailTask::class)
-            ->register('test.stop', StopWorkerTask::class);
+            ->register('test.stop', StopWorkerTask::class)
+            ->register('test.constructor', ConstructorCountingTask::class, retry: new RetryPolicy(maxAttempts: 1, delay: 0));
         $container = new Container(
             Definitions::create()
                 ->set(Journal::class, $this->journal)
@@ -162,6 +176,23 @@ class WorkerTest extends PostgresTestCase
 
         $this->assertSame([], $this->journal->entries);
         $this->assertSame(['failed', 'Exceeded 2 attempts'], [$this->row(1)['status'], $this->row(1)['last_error']]);
+    }
+
+    public function testTasksAbandonedTooOftenAreNotRebuilt(): void
+    {
+        // A constructor that killed its workers must not run again
+        $this->tasks->dispatch(new ConstructorCountingTask('crash'));
+        ConstructorCountingTask::$constructed = 0;
+        foreach (['dead-1', 'dead-2'] as $owner) {
+            $this->store->reserve(['default'], $owner, 60);
+            $this->age(61);
+            $this->store->recover();
+        }
+
+        $this->assertSame(1, $this->work());
+
+        $this->assertSame(0, ConstructorCountingTask::$constructed);
+        $this->assertSame(['failed', 'Exceeded 1 attempts'], [$this->row(1)['status'], $this->row(1)['last_error']]);
     }
 
     public function testRecoversExpiredLeasesOnStart(): void

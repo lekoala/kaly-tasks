@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Kaly\Tasks\Connection;
 
 use Doctrine\DBAL\Connection as DbalConnection;
+use Doctrine\DBAL\Connections\PrimaryReadReplicaConnection;
 use Doctrine\DBAL\ParameterType;
 
 /**
  * A Doctrine DBAL connection. Statements run inside its current transaction,
- * including one opened by an EntityManager on this connection.
+ * including one opened by an EntityManager on this connection, always on the
+ * primary of a primary/replica connection: a reservation writes, and reads
+ * must see uncommitted dispatches.
  */
 final readonly class DoctrineConnection implements Connection
 {
@@ -24,6 +27,9 @@ final readonly class DoctrineConnection implements Connection
 
     public function fetchAll(string $sql, array $params = []): array
     {
+        if ($this->connection instanceof PrimaryReadReplicaConnection) {
+            $this->connection->ensureConnectedToPrimary();
+        }
         /** @var list<array<string,mixed>> */
         return $this->connection->fetchAllAssociative($sql, $params, self::types($params));
     }
