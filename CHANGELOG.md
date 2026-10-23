@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (Unreleased)
+## 0.2.0 - 2026-10-23
 
 - **Breaking:** both stores reject NUL bytes in task names, queue names,
   deduplication keys and owner tokens with `InvalidArgumentException` before
