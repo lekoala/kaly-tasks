@@ -11,6 +11,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.3", "8.4", "8.5"]
 
     services:
       pgsql:
@@ -34,7 +38,7 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.3"
+          php-version: ${{ matrix.php }}
           ini-values: zend.assertions=1
           extensions: pdo_pgsql, pdo_sqlite, pcntl
           coverage: none
