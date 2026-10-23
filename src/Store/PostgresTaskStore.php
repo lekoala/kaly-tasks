@@ -72,6 +72,11 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function push(EncodedTask $task): bool
     {
+        StoreValues::assertNoNul($task->name, 'The task name');
+        StoreValues::assertNoNul($task->queue, 'The queue name');
+        if ($task->deduplicationKey !== null) {
+            StoreValues::assertNoNul($task->deduplicationKey, 'The deduplication key');
+        }
         return $this->connection->execute(
             "INSERT INTO {$this->table} (queue, name, payload, dedup_key) VALUES (?, ?, CAST(? AS JSON), ?)
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
@@ -87,6 +92,10 @@ final readonly class PostgresTaskStore implements TaskStore
         if (in_array('', $queues, true)) {
             throw new InvalidArgumentException('Reserve queue names cannot be empty');
         }
+        foreach ($queues as $queue) {
+            StoreValues::assertNoNul($queue, 'The queue name');
+        }
+        StoreValues::assertNoNul($owner, 'The owner token');
         StoreValues::assertDuration($leaseSeconds, 'The lease', 1);
         $placeholders = implode(', ', array_fill(0, count($queues), '?'));
         $row = $this->connection->fetchAll("WITH next AS (
@@ -107,6 +116,7 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function complete(ReservedTask $task): bool
     {
+        StoreValues::assertNoNul($task->owner, 'The owner token');
         return $this->connection->execute(
             "UPDATE {$this->table}
             SET status = 'done', owner = NULL, lease_until = NULL, last_error = NULL, finished_at = now()
@@ -117,6 +127,7 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function release(ReservedTask $task, int $delaySeconds, string $error): bool
     {
+        StoreValues::assertNoNul($task->owner, 'The owner token');
         StoreValues::assertDuration($delaySeconds, 'The retry delay');
         return $this->connection->execute(
             "UPDATE {$this->table}
@@ -129,6 +140,7 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function fail(ReservedTask $task, string $error): bool
     {
+        StoreValues::assertNoNul($task->owner, 'The owner token');
         return $this->connection->execute(
             "UPDATE {$this->table}
             SET status = 'failed', owner = NULL, lease_until = NULL, last_error = ?, finished_at = now()

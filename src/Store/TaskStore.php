@@ -13,6 +13,10 @@ use Kaly\Tasks\EncodedTask;
  * then `done` or `failed`. Settling a task (complete, release, fail) only
  * applies while the caller still owns it: after its lease expired and another
  * worker took it, a late owner changes nothing. Delivery is at least once.
+ *
+ * Task names, queue names, deduplication keys and owner tokens must not contain
+ * NUL bytes: stores reject them with InvalidArgumentException before SQL runs.
+ * NUL characters in the JSON payload remain supported through JSON escapes.
  */
 interface TaskStore
 {

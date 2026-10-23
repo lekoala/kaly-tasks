@@ -72,6 +72,98 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->assertSame(2, $this->countTasks('running'));
     }
 
+    /**
+     * @return iterable<string,array{string,string,string|null}>
+     */
+    public static function nulMetadata(): iterable
+    {
+        yield 'name' => ["a\0other", 'default', 'event'];
+        yield 'queue' => ['a', "default\0private", 'event'];
+        yield 'key' => ['a', 'default', "event\0other"];
+    }
+
+    #[DataProvider('nulMetadata')]
+    public function testPushRejectsNulMetadataWithoutInserting(string $name, string $queue, ?string $key): void
+    {
+        try {
+            $this->store->push(new EncodedTask($name, $queue, '{}', $key));
+            $this->fail('NUL metadata must be rejected');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('NUL', $e->getMessage());
+        }
+        $this->assertSame(0, $this->countTasks());
+        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}', 'event')));
+    }
+
+    /**
+     * @return iterable<string,array{list<string>,string}>
+     */
+    public static function nulReservations(): iterable
+    {
+        yield 'queue' => [['default', "default\0private"], 'owner'];
+        yield 'owner' => [['default'], "owner\0other"];
+    }
+
+    /**
+     * @param list<string> $queues
+     */
+    #[DataProvider('nulReservations')]
+    public function testReserveRejectsNulMetadataWithoutClaiming(array $queues, string $owner): void
+    {
+        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        try {
+            $this->store->reserve($queues, $owner, 60);
+            $this->fail('NUL metadata must be rejected');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('NUL', $e->getMessage());
+        }
+        $this->assertSame(1, $this->countTasks('pending'));
+        $this->assertSame(1, $this->reserve()?->attempts);
+    }
+
+    /**
+     * @return iterable<string,array{string}>
+     */
+    public static function settlements(): iterable
+    {
+        yield 'complete' => ['complete'];
+        yield 'release' => ['release'];
+        yield 'fail' => ['fail'];
+    }
+
+    #[DataProvider('settlements')]
+    public function testSettlementRejectsNulOwnerWithoutChangingTheTask(string $operation): void
+    {
+        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $task = $this->reserve();
+        $this->assertNotNull($task);
+        $impostor = new ReservedTask($task->id, $task->name, $task->payload, $task->attempts, $task->owner . "\0other");
+        try {
+            match ($operation) {
+                'complete' => $this->store->complete($impostor),
+                'release' => $this->store->release($impostor, 0, 'Retry'),
+                default => $this->store->fail($impostor, 'Failed'),
+            };
+            $this->fail('NUL owner tokens must be rejected');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('NUL', $e->getMessage());
+        }
+        $this->assertSame(1, $this->countTasks('running'));
+        $this->assertTrue($this->store->complete($task));
+    }
+
+    public function testTextMetadataPreservesUnicodeAndLiteralNulEscapes(): void
+    {
+        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
+        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement')));
+        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', '')));
+        $this->assertFalse($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
+        $task = $this->reserve('courriels-é', 'propriétaire-é');
+        $this->assertNotNull($task);
+        $this->assertSame('propriétaire-é', $task->owner);
+        $this->assertTrue($this->store->complete($task));
+    }
+
     public function testPayloadsRoundTripVerbatim(): void
     {
         $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);

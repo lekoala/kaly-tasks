@@ -173,6 +173,12 @@ under a new name and keep the old one until its tasks are drained.
 skipped an insertion, use `$store->push($registry->encode($task))`: it returns
 `true` for a new task and `false` for an existing key.
 
+Both stores reject NUL bytes (`\0`) in task names, queue names, deduplication
+keys and owner tokens with `InvalidArgumentException` before executing SQL.
+This prevents PostgreSQL text parameters from being silently truncated,
+changing routing or treating distinct tasks as duplicates. NUL characters in
+task data remain supported as JSON escapes, unless used as a deduplication key.
+
 ## Worker
 
 Kaly has no console: a worker is a small script of the application.

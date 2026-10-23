@@ -2,6 +2,12 @@
 
 ## 0.2.0 (Unreleased)
 
+- **Breaking:** both stores reject NUL bytes in task names, queue names,
+  deduplication keys and owner tokens with `InvalidArgumentException` before
+  SQL runs. This prevents silent PostgreSQL truncation from dropping distinct
+  tasks as duplicates, changing routing or accepting a different owner token.
+  SQLite users with NUL bytes in these fields must migrate them before
+  upgrading. NUL characters in JSON payloads remain supported.
 - Storage failures while settling an undecodable task now propagate and stop
   the worker, without attempting another settlement.
 - Decoding rejects non-finite floats, including overflowed JSON numbers in

@@ -19,6 +19,17 @@ final class StoreValues
     private const MAX_ERROR_LENGTH = 4096;
 
     /**
+     * PostgreSQL text parameters may be silently truncated at a NUL byte.
+     * Reject it in identifiers rather than changing their identity.
+     */
+    public static function assertNoNul(string $value, string $what): void
+    {
+        if (str_contains($value, "\0")) {
+            throw new InvalidArgumentException("{$what} cannot contain NUL bytes");
+        }
+    }
+
+    /**
      * Durations and limits are bound as SQL INTEGER.
      */
     public static function assertDuration(int $value, string $what, int $min = 0): void
