@@ -74,6 +74,34 @@ final readonly class NotInvocableTask
     ) {}
 }
 
+final readonly class EmptyTask
+{
+    public function __invoke(): void {}
+}
+
+final readonly class OptionalTask
+{
+    public function __construct(
+        public string $id = 'default',
+    ) {}
+
+    public function __invoke(): void {}
+}
+
+enum NumberedPriority: int
+{
+    case Low = 1;
+}
+
+final readonly class IntegerEnumTask
+{
+    public function __construct(
+        public NumberedPriority $priority,
+    ) {}
+
+    public function __invoke(): void {}
+}
+
 class TaskRegistryTest extends TestCase
 {
     public function testRoundTripsEveryStorableType(): void
@@ -90,6 +118,43 @@ class TaskRegistryTest extends TestCase
             $encoded->payload,
         );
         $this->assertEquals($task, $registry->decode('test.typed', $encoded->payload));
+    }
+
+    public function testEmptyTaskPayloadsAreJsonObjects(): void
+    {
+        $registry = (new TaskRegistry())
+            ->register('test.empty', EmptyTask::class)
+            ->register('test.optional', OptionalTask::class);
+
+        $encoded = $registry->encode(new EmptyTask());
+
+        $this->assertSame('{}', $encoded->payload);
+        $this->assertEquals(new EmptyTask(), $registry->decode('test.empty', $encoded->payload));
+        $this->assertEquals(new OptionalTask(), $registry->decode('test.optional', " \t\r\n{} "));
+    }
+
+    /**
+     * @return iterable<string,array{string}>
+     */
+    public static function nonObjectPayloads(): iterable
+    {
+        yield 'empty list' => ['[]'];
+        yield 'whitespace list' => [" \t\r\n[] "];
+        yield 'nonempty list' => ['[1]'];
+        yield 'null' => ['null'];
+        yield 'boolean' => ['false'];
+        yield 'number' => ['1'];
+        yield 'string' => ['"{}"'];
+    }
+
+    #[DataProvider('nonObjectPayloads')]
+    public function testDecodeRequiresAnObjectEvenWithoutRequiredParameters(string $payload): void
+    {
+        $registry = (new TaskRegistry())->register('test.optional', OptionalTask::class);
+
+        $this->expectException(UnexpectedValueException::class);
+        $this->expectExceptionMessage('payload must be a JSON object');
+        $registry->decode('test.optional', $payload);
     }
 
     public function testWholeFloatsStoredAsIntegersDecodeAsFloats(): void
@@ -135,11 +200,19 @@ class TaskRegistryTest extends TestCase
         yield 'missing key' => ['test.typed', '{"count":1,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
         yield 'wrong type' => ['test.typed', '{"id":1,"count":1,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
         yield 'null for non-nullable' => ['test.typed', '{"id":null,"count":1,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
+        yield 'wrong enum backing type' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":[],"priority":1}'];
         yield 'unknown enum case' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":[],"priority":"urgent"}'];
         yield 'int for bool' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":1,"tags":[],"priority":"low"}'];
         yield 'float for int' => ['test.typed', '{"id":"a","count":1.5,"ratio":1,"urgent":true,"tags":[],"priority":"low"}'];
         yield 'string for array' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":"a","priority":"low"}'];
         yield 'string for float' => ['test.typed', '{"id":"a","count":1,"ratio":"1","urgent":true,"tags":[],"priority":"low"}'];
+        yield 'positive float overflow' => ['test.typed', '{"id":"a","count":1,"ratio":1e400,"urgent":true,"tags":[],"priority":"low"}'];
+        yield 'negative float overflow' => ['test.typed', '{"id":"a","count":1,"ratio":-1e400,"urgent":true,"tags":[],"priority":"low"}'];
+        yield 'float overflow in list' => ['test.typed', '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":[1e400],"priority":"low"}'];
+        yield 'nested float overflow' => [
+            'test.typed',
+            '{"id":"a","count":1,"ratio":1,"urgent":true,"tags":{"nested":[{"n":-1e400}]},"priority":"low"}',
+        ];
     }
 
     #[DataProvider('invalidPayloads')]
@@ -149,6 +222,45 @@ class TaskRegistryTest extends TestCase
 
         $this->expectException(UnexpectedValueException::class);
         $registry->decode($name, $payload);
+    }
+
+    public function testIntegerBackedEnumsRoundTrip(): void
+    {
+        $registry = (new TaskRegistry())->register('test.integer-enum', IntegerEnumTask::class);
+        $task = new IntegerEnumTask(NumberedPriority::Low);
+
+        $this->assertSame('{"priority":1}', $registry->encode($task)->payload);
+        $this->assertEquals($task, $registry->decode('test.integer-enum', '{"priority":1}'));
+    }
+
+    /**
+     * @return iterable<string,array{string}>
+     */
+    public static function invalidIntegerEnumPayloads(): iterable
+    {
+        yield 'numeric string' => ['{"priority":"1"}'];
+        yield 'non-numeric string' => ['{"priority":"low"}'];
+        yield 'unknown case' => ['{"priority":2}'];
+        yield 'float' => ['{"priority":1.0}'];
+        yield 'boolean' => ['{"priority":true}'];
+    }
+
+    #[DataProvider('invalidIntegerEnumPayloads')]
+    public function testIntegerBackedEnumsRejectInvalidPayloads(string $payload): void
+    {
+        $registry = (new TaskRegistry())->register('test.integer-enum', IntegerEnumTask::class);
+
+        $this->expectException(UnexpectedValueException::class);
+        $this->expectExceptionMessage('payload has an invalid ' . NumberedPriority::class);
+        $registry->decode('test.integer-enum', $payload);
+    }
+
+    public function testFiniteFloatExtremesStillRoundTrip(): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+        $task = new TypedTask('a', 1, PHP_FLOAT_MAX, true, [-PHP_FLOAT_MAX, ['min' => PHP_FLOAT_MIN, 'text' => '1e400']], Priority::Low);
+
+        $this->assertEquals($task, $registry->decode('test.typed', $registry->encode($task)->payload));
     }
 
     public function testEncodeRejectsUnregisteredTasks(): void
@@ -164,6 +276,31 @@ class TaskRegistryTest extends TestCase
 
         $this->expectException(InvalidArgumentException::class);
         $registry->encode(new TypedTask('a', 1, 1.0, true, [new Journal()], Priority::Low));
+    }
+
+    /**
+     * @return iterable<string,array{array<mixed>}>
+     */
+    public static function nonJsonArrays(): iterable
+    {
+        yield 'nan' => [[NAN]];
+        yield 'infinite' => [[['nested' => INF]]];
+        yield 'negative infinite' => [[-INF]];
+        yield 'invalid utf8 value' => [["\xFF"]];
+        yield 'invalid utf8 key' => [["\xFF" => 'value']];
+    }
+
+    /**
+     * @param array<mixed> $tags
+     */
+    #[DataProvider('nonJsonArrays')]
+    public function testEncodeRejectsNonJsonArrayValues(array $tags): void
+    {
+        $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('cannot be encoded');
+        $registry->encode(new TypedTask('a', 1, 1.0, true, $tags, Priority::Low));
     }
 
     public function testEncodeRejectsRecursiveArrays(): void
@@ -259,6 +396,10 @@ class TaskRegistryTest extends TestCase
         yield 'negative delay' => [3, -1, 2.0, 60];
         yield 'cap below delay' => [3, 10, 2.0, 5];
         yield 'shrinking' => [3, 10, 0.5, 60];
+        yield 'nan' => [3, 10, NAN, 60];
+        yield 'infinite' => [3, 10, INF, 60];
+        yield 'negative infinite' => [3, 10, -INF, 60];
+        yield 'overflowing cap' => [3, 10, 2.0, 2_147_483_648];
     }
 
     #[DataProvider('invalidRetryPolicies')]
@@ -266,6 +407,32 @@ class TaskRegistryTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         new RetryPolicy($maxAttempts, $delay, $multiplier, $maxDelay);
+    }
+
+    public function testRetryDelayCanReachTheSqlIntegerLimit(): void
+    {
+        $retry = new RetryPolicy(delay: 1, multiplier: PHP_FLOAT_MAX, maxDelay: 2_147_483_647);
+
+        $this->assertSame(1, $retry->delayAfter(1));
+        $this->assertSame(2_147_483_647, $retry->delayAfter(3));
+        $this->assertSame(2_147_483_647, $retry->delayAfter(PHP_INT_MAX));
+    }
+
+    public function testWorkerRejectsAnOverflowingLease(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new WorkerOptions(lease: 2_147_483_648);
+    }
+
+    public function testWorkerAcceptsTheMaximumLease(): void
+    {
+        $this->assertSame(2_147_483_647, (new WorkerOptions(lease: 2_147_483_647))->lease);
+    }
+
+    public function testWorkerRejectsEmptyQueueNames(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new WorkerOptions(queues: ['default', '']);
     }
 
     public function testWorkerTimeoutMustBeShorterThanTheLease(): void

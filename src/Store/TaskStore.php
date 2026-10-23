@@ -17,6 +17,13 @@ use Kaly\Tasks\EncodedTask;
 interface TaskStore
 {
     /**
+     * The DDL to create the table, for your migrations.
+     *
+     * @return list<string>
+     */
+    public function schema(): array;
+
+    /**
      * @return bool False when a task with the same name and deduplication key is already stored
      */
     public function push(EncodedTask $task): bool;
@@ -45,14 +52,22 @@ interface TaskStore
     public function recover(): int;
 
     /**
-     * @return list<array{id:int,queue:string,name:string,payload:string,attempts:int,error:string|null}>
+     * Dates are Unix timestamps in whole seconds.
+     *
+     * @return list<array{id:int,queue:string,name:string,payload:string,attempts:int,error:string|null,created_at:int,finished_at:int}>
      */
     public function failed(int $limit = 50): array;
 
     /**
      * Makes a failed task available again, with a fresh attempt count.
+     * The previous error is kept until the task succeeds or fails again.
      */
     public function retryFailed(int $id): bool;
+
+    /**
+     * Deletes a failed task and frees its deduplication key.
+     */
+    public function deleteFailed(int $id): bool;
 
     /**
      * Deletes done tasks finished more than `$olderThanSeconds` ago, and failed
@@ -60,7 +75,7 @@ interface TaskStore
      *
      * Done and failed tasks keep their deduplication key until purged: the
      * retention is the deduplication window. A failed task is never replaced
-     * by a new dispatch with the same key, only by `retryFailed()`.
+     * by a new dispatch with the same key unless deleted or purged.
      *
      * @return int The number of deleted tasks
      */

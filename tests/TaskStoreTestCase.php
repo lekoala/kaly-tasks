@@ -28,6 +28,9 @@ abstract class TaskStoreTestCase extends StoreTestCase
     public static function invalidBounds(): iterable
     {
         yield 'no lease' => ['lease'];
+        yield 'overflowing lease' => ['leaseOverflow'];
+        yield 'no queues' => ['noQueues'];
+        yield 'empty queue name' => ['emptyQueue'];
         yield 'negative delay' => ['delay'];
         yield 'no limit' => ['limit'];
         yield 'negative retention' => ['retention'];
@@ -43,6 +46,9 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->expectException(InvalidArgumentException::class);
         match ($case) {
             'lease' => $this->store->reserve(['default'], 'owner', 0),
+            'leaseOverflow' => $this->store->reserve(['default'], 'owner', 2_147_483_648),
+            'noQueues' => $this->store->reserve([], 'owner', 60),
+            'emptyQueue' => $this->store->reserve(['default', ''], 'owner', 60),
             'delay' => $this->store->release($task, -5, 'no'),
             'limit' => $this->store->failed(0),
             'retention' => $this->store->purge(-1),
@@ -180,13 +186,51 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->assertNotNull($task);
         $this->store->fail($task, 'Broken');
 
+        $failed = $this->store->failed();
+        $this->assertCount(1, $failed);
+        $this->assertGreaterThan(0, $failed[0]['created_at']);
+        $this->assertGreaterThanOrEqual($failed[0]['created_at'], $failed[0]['finished_at']);
+        $this->assertEqualsWithDelta(time(), $failed[0]['finished_at'], 60);
         $this->assertSame(
-            [['id' => $task->id, 'queue' => 'default', 'name' => 'a', 'payload' => '{"n":1}', 'attempts' => 1, 'error' => 'Broken']],
-            $this->store->failed(),
+            [
+                'id' => $task->id,
+                'queue' => 'default',
+                'name' => 'a',
+                'payload' => '{"n":1}',
+                'attempts' => 1,
+                'error' => 'Broken',
+                'created_at' => $failed[0]['created_at'],
+                'finished_at' => $failed[0]['finished_at'],
+            ],
+            $failed[0],
         );
         $this->assertTrue($this->store->retryFailed($task->id));
         $this->assertFalse($this->store->retryFailed($task->id));
+        $this->assertSame('Broken', $this->row($task->id)['last_error']);
         $this->assertSame(1, $this->reserve()?->attempts);
+    }
+
+    public function testDeleteFailedOnlyDeletesFailedTasksAndFreesTheirKey(): void
+    {
+        $encoded = new EncodedTask('a', 'default', '{}', 'event-1');
+        $this->store->push($encoded);
+        $this->assertFalse($this->store->deleteFailed(1), 'Pending tasks are kept');
+        $task = $this->reserve();
+        $this->assertNotNull($task);
+        $this->assertFalse($this->store->deleteFailed($task->id), 'Running tasks are kept');
+        $this->store->fail($task, 'Broken');
+
+        $this->assertTrue($this->store->deleteFailed($task->id));
+        $this->assertSame([], $this->store->failed());
+        $this->assertFalse($this->store->deleteFailed($task->id));
+        $this->assertFalse($this->store->deleteFailed(PHP_INT_MAX));
+        $this->assertTrue($this->store->push($encoded), 'Deleting frees the deduplication key');
+
+        $done = $this->reserve();
+        $this->assertNotNull($done);
+        $this->store->complete($done);
+        $this->assertFalse($this->store->deleteFailed($done->id), 'Done tasks are kept');
+        $this->assertFalse($this->store->push($encoded));
     }
 
     public function testPurgeKeepsRecentAndUnfinishedTasks(): void

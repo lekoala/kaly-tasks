@@ -11,6 +11,7 @@ use ReflectionClass;
 use ReflectionNamedType;
 use ReflectionParameter;
 use Throwable;
+use TypeError;
 use UnexpectedValueException;
 
 /**
@@ -115,7 +116,7 @@ final class TaskRegistry
 
         try {
             $payload = json_encode(
-                $data,
+                (object) $data,
                 JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
                 self::MAX_DEPTH,
             );
@@ -143,7 +144,7 @@ final class TaskRegistry
         } catch (JsonException $e) {
             throw new UnexpectedValueException("Task '{$name}' has an invalid payload: {$e->getMessage()}", 0, $e);
         }
-        if (!is_array($data) || $data !== [] && array_is_list($data)) {
+        if (!is_array($data) || !str_starts_with(ltrim($payload, " \t\r\n"), '{')) {
             throw new UnexpectedValueException("Task '{$name}' payload must be a JSON object");
         }
 
@@ -178,6 +179,7 @@ final class TaskRegistry
      */
     private static function decodeValue(string $name, string $parameter, array $definition, mixed $value): mixed
     {
+        self::assertFiniteValue($name, $parameter, $value);
         if ($value === null) {
             if (!$definition['nullable']) {
                 throw new UnexpectedValueException("Task '{$name}' payload has null for non-nullable '{$parameter}'");
@@ -187,7 +189,11 @@ final class TaskRegistry
 
         $enum = $definition['enum'];
         if ($enum !== null) {
-            $case = is_int($value) || is_string($value) ? $enum::tryFrom($value) : null;
+            try {
+                $case = is_int($value) || is_string($value) ? $enum::tryFrom($value) : null;
+            } catch (TypeError $e) {
+                throw new UnexpectedValueException("Task '{$name}' payload has an invalid {$enum} for '{$parameter}'", 0, $e);
+            }
             if ($case === null) {
                 throw new UnexpectedValueException("Task '{$name}' payload has an invalid {$enum} for '{$parameter}'");
             }
@@ -208,6 +214,18 @@ final class TaskRegistry
             );
         }
         return $definition['scalar'] === 'float' && is_int($value) ? (float) $value : $value;
+    }
+
+    private static function assertFiniteValue(string $name, string $parameter, mixed $value): void
+    {
+        if (is_float($value) && !is_finite($value)) {
+            throw new UnexpectedValueException("Task '{$name}' payload has a non-finite float for '{$parameter}'");
+        }
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                self::assertFiniteValue($name, $parameter, $item);
+            }
+        }
     }
 
     /**

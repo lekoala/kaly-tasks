@@ -84,6 +84,9 @@ final readonly class PostgresTaskStore implements TaskStore
         if ($queues === []) {
             throw new InvalidArgumentException('Reserve needs at least one queue');
         }
+        if (in_array('', $queues, true)) {
+            throw new InvalidArgumentException('Reserve queue names cannot be empty');
+        }
         StoreValues::assertDuration($leaseSeconds, 'The lease', 1);
         $placeholders = implode(', ', array_fill(0, count($queues), '?'));
         $row = $this->connection->fetchAll("WITH next AS (
@@ -144,11 +147,10 @@ final readonly class PostgresTaskStore implements TaskStore
     public function failed(int $limit = 50): array
     {
         StoreValues::assertDuration($limit, 'The limit', 1);
-        $rows = $this->connection->fetchAll(
-            "SELECT id, queue, name, CAST(payload AS TEXT) AS payload, attempts, last_error FROM {$this->table}
-            WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT CAST(? AS INTEGER)",
-            [$limit],
-        );
+        $rows = $this->connection->fetchAll("SELECT id, queue, name, CAST(payload AS TEXT) AS payload, attempts, last_error,
+                FLOOR(EXTRACT(EPOCH FROM created_at))::BIGINT AS created_at,
+                FLOOR(EXTRACT(EPOCH FROM finished_at))::BIGINT AS finished_at FROM {$this->table} AS t
+            WHERE status = 'failed' ORDER BY t.finished_at DESC, id DESC LIMIT CAST(? AS INTEGER)", [$limit]);
         return array_map(StoreValues::failed(...), $rows);
     }
 
@@ -157,6 +159,11 @@ final readonly class PostgresTaskStore implements TaskStore
         return $this->connection->execute("UPDATE {$this->table}
             SET status = 'pending', attempts = 0, available_at = now(), finished_at = NULL
             WHERE id = ? AND status = 'failed'", [$id]) === 1;
+    }
+
+    public function deleteFailed(int $id): bool
+    {
+        return $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND status = 'failed'", [$id]) === 1;
     }
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int

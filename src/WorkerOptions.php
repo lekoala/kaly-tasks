@@ -37,8 +37,11 @@ final readonly class WorkerOptions
         if ($queues === []) {
             throw new InvalidArgumentException('A worker needs at least one queue');
         }
-        if ($lease < 1) {
-            throw new InvalidArgumentException('The lease must last at least one second');
+        if (in_array('', $queues, true)) {
+            throw new InvalidArgumentException('Worker queue names cannot be empty');
+        }
+        if ($lease < 1 || $lease > 2_147_483_647) {
+            throw new InvalidArgumentException('The lease must be between 1 and 2147483647 seconds');
         }
         if ($timeout < 0 || $timeout > 0 && $timeout >= $lease) {
             throw new InvalidArgumentException('The task timeout must be shorter than the lease');

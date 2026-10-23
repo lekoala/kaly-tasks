@@ -83,6 +83,9 @@ final readonly class SqliteTaskStore implements TaskStore
         if ($queues === []) {
             throw new InvalidArgumentException('Reserve needs at least one queue');
         }
+        if (in_array('', $queues, true)) {
+            throw new InvalidArgumentException('Reserve queue names cannot be empty');
+        }
         StoreValues::assertDuration($leaseSeconds, 'The lease', 1);
         $placeholders = implode(', ', array_fill(0, count($queues), '?'));
         // A writing statement takes the write lock before it reads: two
@@ -141,8 +144,11 @@ final readonly class SqliteTaskStore implements TaskStore
     public function failed(int $limit = 50): array
     {
         StoreValues::assertDuration($limit, 'The limit', 1);
-        $rows = $this->connection->fetchAll("SELECT id, queue, name, payload, attempts, last_error FROM {$this->table}
-            WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT ?", [$limit]);
+        $rows = $this->connection->fetchAll(
+            "SELECT id, queue, name, payload, attempts, last_error, created_at, finished_at FROM {$this->table}
+            WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT ?",
+            [$limit],
+        );
         return array_map(StoreValues::failed(...), $rows);
     }
 
@@ -151,6 +157,11 @@ final readonly class SqliteTaskStore implements TaskStore
         return $this->connection->execute("UPDATE {$this->table}
             SET status = 'pending', attempts = 0, available_at = unixepoch(), finished_at = NULL
             WHERE id = ? AND status = 'failed'", [$id]) === 1;
+    }
+
+    public function deleteFailed(int $id): bool
+    {
+        return $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND status = 'failed'", [$id]) === 1;
     }
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int

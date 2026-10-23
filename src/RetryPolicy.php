@@ -21,11 +21,11 @@ final readonly class RetryPolicy
         if ($maxAttempts < 1) {
             throw new InvalidArgumentException('A task needs at least one attempt');
         }
-        if ($delay < 0 || $maxDelay < $delay) {
-            throw new InvalidArgumentException('Retry delays must satisfy 0 <= delay <= maxDelay');
+        if ($delay < 0 || $maxDelay < $delay || $maxDelay > 2_147_483_647) {
+            throw new InvalidArgumentException('Retry delays must satisfy 0 <= delay <= maxDelay <= 2147483647');
         }
-        if ($multiplier < 1) {
-            throw new InvalidArgumentException('The retry multiplier cannot be lower than 1');
+        if (!is_finite($multiplier) || $multiplier < 1) {
+            throw new InvalidArgumentException('The retry multiplier must be finite and at least 1');
         }
     }
 

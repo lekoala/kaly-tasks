@@ -65,7 +65,7 @@ final class StoreValues
 
     /**
      * @param array<string,mixed> $row
-     * @return array{id:int,queue:string,name:string,payload:string,attempts:int,error:string|null}
+     * @return array{id:int,queue:string,name:string,payload:string,attempts:int,error:string|null,created_at:int,finished_at:int}
      */
     public static function failed(array $row): array
     {
@@ -76,6 +76,8 @@ final class StoreValues
             'payload' => self::string($row['payload']),
             'attempts' => self::int($row['attempts']),
             'error' => $row['last_error'] === null ? null : self::string($row['last_error']),
+            'created_at' => self::int($row['created_at']),
+            'finished_at' => self::int($row['finished_at']),
         ];
     }
 

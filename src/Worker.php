@@ -135,23 +135,25 @@ final class Worker
                 $this->settled($this->store->fail($reserved, $e->getMessage()), $context);
                 return;
             }
-            // Registration guarantees __invoke()
-            assert(is_callable($task));
-            $this->injector->invoke($task);
-        } catch (Throwable $e) {
-            $error = $e::class . ': ' . $e->getMessage();
-            if ($reserved->attempts >= $retry->maxAttempts) {
-                $this->logger->error('Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
-                $this->settled($this->store->fail($reserved, $error), $context);
-            } else {
-                $delay = $retry->delayAfter($reserved->attempts);
-                $this->logger->warning(
-                    'Task {task} #{id} will retry in {delay}s: {error}',
-                    $context + ['delay' => $delay, 'error' => $error, 'exception' => $e],
-                );
-                $this->settled($this->store->release($reserved, $delay, $error), $context);
+            try {
+                // Registration guarantees __invoke()
+                assert(is_callable($task));
+                $this->injector->invoke($task);
+            } catch (Throwable $e) {
+                $error = $e::class . ': ' . $e->getMessage();
+                if ($reserved->attempts >= $retry->maxAttempts) {
+                    $this->logger->error('Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
+                    $this->settled($this->store->fail($reserved, $error), $context);
+                } else {
+                    $delay = $retry->delayAfter($reserved->attempts);
+                    $this->logger->warning(
+                        'Task {task} #{id} will retry in {delay}s: {error}',
+                        $context + ['delay' => $delay, 'error' => $error, 'exception' => $e],
+                    );
+                    $this->settled($this->store->release($reserved, $delay, $error), $context);
+                }
+                return;
             }
-            return;
         } finally {
             if ($timeout > 0) {
                 pcntl_alarm(0);

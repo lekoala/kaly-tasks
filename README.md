@@ -159,12 +159,19 @@ $app->configure(fn(Definitions $di) => $di
 
 A persistable task has only public promoted constructor parameters, typed
 `int`, `float`, `string`, `bool`, `array` (of scalars, null and arrays) or a
-backed enum. Registration checks it.
+backed enum. Registration checks it. Payloads are JSON objects, including `{}`
+for tasks without constructor parameters; JSON lists such as `[]` are rejected.
+Float values must be finite, including inside nested arrays. Decoding checks
+enum backing types strictly and reports invalid payloads with `UnexpectedValueException`.
 
 Stored payloads are a public contract until every stored task has been
 processed or migrated. Adding an optional parameter is compatible; renaming,
 retyping or removing one (or an enum case) is not: register the new shape
 under a new name and keep the old one until its tasks are drained.
+
+`dispatch()` follows Kaly's `void` contract. To observe whether deduplication
+skipped an insertion, use `$store->push($registry->encode($task))`: it returns
+`true` for a new task and `false` for an existing key.
 
 ## Worker
 
@@ -209,9 +216,15 @@ several hosts agree.
 
 ```php
 $store->failed(limit: 50);        // inspect failed tasks
+$store->deleteFailed($id);        // delete a failed task and free its deduplication key
 $store->retryFailed($id);         // run a failed task again, with fresh attempts
 $store->purge(7 * 24 * 3600, 30 * 24 * 3600); // delete done tasks after a week, failed ones after a month
 ```
+
+`failed()` returns rows with `id`, `queue`, `name`, `payload`, `attempts`,
+`error`, `created_at` and `finished_at`. Both dates are Unix timestamps in whole
+seconds. `retryFailed()` preserves the previous error until the task succeeds
+or another failure replaces it.
 
 Done and failed tasks are kept until purged: their deduplication keys stay
 active for the retention period. Without the second argument, failed tasks are
@@ -226,4 +239,11 @@ composer test
 
 Every suite runs against both stores. The SQLite tests use temporary files
 and always run; set `KALY_TASKS_PGSQL_DSN` to another database, or empty to
-skip the PostgreSQL tests.
+skip the PostgreSQL tests:
+
+```bash
+KALY_TASKS_PGSQL_DSN="" composer test
+```
+
+The default PostgreSQL DSN expects Docker on port 55432. If it is configured
+but unreachable, the tests fail rather than silently skipping PostgreSQL.

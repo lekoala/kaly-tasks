@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (Unreleased)
+
+- Storage failures while settling an undecodable task now propagate and stop
+  the worker, without attempting another settlement.
+- Decoding rejects non-finite floats, including overflowed JSON numbers in
+  nested arrays. Invalid enum backing types consistently raise
+  `UnexpectedValueException`.
+
+- **Breaking:** task payloads must be JSON objects, even without constructor
+  parameters. Such tasks now encode as `{}`; migrate any stored `[]` payloads
+  to `{}` before upgrading.
+- **Breaking:** `TaskStore` now requires `schema()` and `deleteFailed()`;
+  custom implementations must add them. `failed()` rows include `created_at`
+  and `finished_at` as integer Unix timestamps in whole seconds.
+- Retry policies reject non-finite multipliers and delays above the SQL integer
+  limit. Worker options reject leases above that limit and empty queue names;
+  stores also reject empty queue names at reservation.
+- Failed tasks can be individually deleted, freeing their deduplication key.
+  Documented deduplication results, error retention on retry and running tests
+  without PostgreSQL.
+
+## 0.1.0 — 2026-10-16
 
 - `Kaly\Tasks\DatabaseTaskDispatcher` implements `Kaly\Task\TaskDispatcher` on
   a SQL store: a task dispatched on the application connection joins the
