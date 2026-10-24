@@ -16,7 +16,13 @@ use Kaly\Tasks\WorkerOptions;
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 
-[, $engine, $dsn, $table, $timeout] = $argv;
+// $argv may not be defined: read the same list from $_SERVER and validate it
+$arguments = is_array($_SERVER['argv'] ?? null) ? array_values(array_filter($_SERVER['argv'], is_string(...))) : [];
+if (count($arguments) !== 5) {
+    fwrite(STDERR, 'Usage: php signal-worker.php <engine> <dsn> <table> <timeout>' . PHP_EOL);
+    exit(1);
+}
+[, $engine, $dsn, $table, $timeout] = $arguments;
 $engine = $engine === 'sqlite' ? new SqliteEngine($dsn) : new PostgresEngine($dsn);
 $registry = (new TaskRegistry())->register('test.sleep', SleepTask::class);
 $store = $engine->store(new PdoConnection($engine->connect()), $table);
