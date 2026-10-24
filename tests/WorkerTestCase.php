@@ -117,12 +117,12 @@ abstract class WorkerTestCase extends StoreTestCase
         $container = new Container(
             Definitions::create()
                 ->set(Journal::class, $this->journal)
-                ->set(PDO::class, $this->pdo)
+                ->set(PDO::class, $this->pdo())
                 // Lets a task stop the running worker
                 ->set(Worker::class, fn(): Worker => $this->worker),
         );
-        $this->worker = new Worker($this->store, $this->registry, new Injector($container), $this->logger);
-        $this->tasks = new DatabaseTaskDispatcher($this->store, $this->registry);
+        $this->worker = new Worker($this->store(), $this->registry, new Injector($container), $this->logger);
+        $this->tasks = new DatabaseTaskDispatcher($this->store(), $this->registry);
     }
 
     private function work(int $maxTasks = 1000, int $memoryLimit = PHP_INT_MAX): int
@@ -160,8 +160,8 @@ abstract class WorkerTestCase extends StoreTestCase
 
     public function testUndecodableTasksFailWithoutRetry(): void
     {
-        $this->store->push(new EncodedTask('test.record', 'default', '{"bogus":1}'));
-        $this->store->push(new EncodedTask('test.unknown', 'default', '{}'));
+        $this->store()->push(new EncodedTask('test.record', 'default', '{"bogus":1}'));
+        $this->store()->push(new EncodedTask('test.unknown', 'default', '{}'));
 
         $this->assertSame(2, $this->work());
 
@@ -174,9 +174,9 @@ abstract class WorkerTestCase extends StoreTestCase
         $this->tasks->dispatch(new RecordTask('crash'));
         // Two workers died with the task: leases expired and were recovered
         foreach (['dead-1', 'dead-2'] as $owner) {
-            $this->store->reserve(['default'], $owner, 60);
+            $this->store()->reserve(['default'], $owner, 60);
             $this->age(61);
-            $this->store->recover();
+            $this->store()->recover();
         }
 
         $this->assertSame(1, $this->work());
@@ -191,9 +191,9 @@ abstract class WorkerTestCase extends StoreTestCase
         $this->tasks->dispatch(new ConstructorCountingTask('crash'));
         ConstructorCountingTask::$constructed = 0;
         foreach (['dead-1', 'dead-2'] as $owner) {
-            $this->store->reserve(['default'], $owner, 60);
+            $this->store()->reserve(['default'], $owner, 60);
             $this->age(61);
-            $this->store->recover();
+            $this->store()->recover();
         }
 
         $this->assertSame(1, $this->work());
@@ -205,7 +205,7 @@ abstract class WorkerTestCase extends StoreTestCase
     public function testRecoversExpiredLeasesOnStart(): void
     {
         $this->tasks->dispatch(new RecordTask('crash'));
-        $this->store->reserve(['default'], 'dead', 60);
+        $this->store()->reserve(['default'], 'dead', 60);
         $this->age(61);
 
         $this->assertSame(1, $this->work());

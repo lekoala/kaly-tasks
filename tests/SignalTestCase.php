@@ -32,7 +32,7 @@ abstract class SignalTestCase extends StoreTestCase
 
     private function dispatch(int ...$seconds): void
     {
-        $tasks = new DatabaseTaskDispatcher($this->store, (new TaskRegistry())->register('test.sleep', SleepTask::class));
+        $tasks = new DatabaseTaskDispatcher($this->store(), (new TaskRegistry())->register('test.sleep', SleepTask::class));
         foreach ($seconds as $duration) {
             $tasks->dispatch(new SleepTask($duration));
         }

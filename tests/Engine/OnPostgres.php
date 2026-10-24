@@ -16,7 +16,7 @@ trait OnPostgres
 
     protected function postgres(): PostgresEngine
     {
-        $this->assertInstanceOf(PostgresEngine::class, $this->engine);
-        return $this->engine;
+        $this->assertInstanceOf(PostgresEngine::class, $this->engine());
+        return $this->engine();
     }
 }

@@ -15,18 +15,18 @@ class PostgresTaskStoreTest extends TaskStoreTestCase
 
     public function testRejectsUnsafeTableNames(): void
     {
-        new PostgresTaskStore(new PdoConnection($this->pdo), 'queue.tasks');
+        new PostgresTaskStore(new PdoConnection($this->pdo()), 'queue.tasks');
 
         $this->expectException(InvalidArgumentException::class);
-        new PostgresTaskStore(new PdoConnection($this->pdo), 'tasks; DROP TABLE users');
+        new PostgresTaskStore(new PdoConnection($this->pdo()), 'tasks; DROP TABLE users');
     }
 
     public function testRejectsTableNamesThatWouldTruncateIndexNames(): void
     {
-        new PostgresTaskStore(new PdoConnection($this->pdo), str_repeat('t', 55));
+        new PostgresTaskStore(new PdoConnection($this->pdo()), str_repeat('t', 55));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('must be at most 55 characters');
-        new PostgresTaskStore(new PdoConnection($this->pdo), str_repeat('t', 56));
+        new PostgresTaskStore(new PdoConnection($this->pdo()), str_repeat('t', 56));
     }
 }

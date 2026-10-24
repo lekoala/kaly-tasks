@@ -19,7 +19,7 @@ abstract class TaskStoreTestCase extends StoreTestCase
 {
     private function reserve(string $queue = 'default', string $owner = 'owner-a'): ?ReservedTask
     {
-        return $this->store->reserve([$queue], $owner, 60);
+        return $this->store()->reserve([$queue], $owner, 60);
     }
 
     /**
@@ -45,22 +45,22 @@ abstract class TaskStoreTestCase extends StoreTestCase
 
         $this->expectException(InvalidArgumentException::class);
         match ($case) {
-            'lease' => $this->store->reserve(['default'], 'owner', 0),
-            'leaseOverflow' => $this->store->reserve(['default'], 'owner', 2_147_483_648),
-            'noQueues' => $this->store->reserve([], 'owner', 60),
-            'emptyQueue' => $this->store->reserve(['default', ''], 'owner', 60),
-            'delay' => $this->store->release($task, -5, 'no'),
-            'limit' => $this->store->failed(0),
-            'retention' => $this->store->purge(-1),
-            'failedRetention' => $this->store->purge(60, -1),
-            default => $this->store->purge(2_147_483_648),
+            'lease' => $this->store()->reserve(['default'], 'owner', 0),
+            'leaseOverflow' => $this->store()->reserve(['default'], 'owner', 2_147_483_648),
+            'noQueues' => $this->store()->reserve([], 'owner', 60),
+            'emptyQueue' => $this->store()->reserve(['default', ''], 'owner', 60),
+            'delay' => $this->store()->release($task, -5, 'no'),
+            'limit' => $this->store()->failed(0),
+            'retention' => $this->store()->purge(-1),
+            'failedRetention' => $this->store()->purge(60, -1),
+            default => $this->store()->purge(2_147_483_648),
         };
     }
 
     public function testReservesInOrderAndLeasesToTheOwner(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{"n":1}'));
-        $this->store->push(new EncodedTask('b', 'default', '{"n":2}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{"n":1}'));
+        $this->store()->push(new EncodedTask('b', 'default', '{"n":2}'));
 
         $first = $this->reserve();
         $this->assertSame(1, $this->countTasks('running'), 'A reservation claims exactly one task');
@@ -86,13 +86,13 @@ abstract class TaskStoreTestCase extends StoreTestCase
     public function testPushRejectsNulMetadataWithoutInserting(string $name, string $queue, ?string $key): void
     {
         try {
-            $this->store->push(new EncodedTask($name, $queue, '{}', $key));
+            $this->store()->push(new EncodedTask($name, $queue, '{}', $key));
             $this->fail('NUL metadata must be rejected');
         } catch (InvalidArgumentException $e) {
             $this->assertStringContainsString('NUL', $e->getMessage());
         }
         $this->assertSame(0, $this->countTasks());
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}', 'event')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'default', '{}', 'event')));
     }
 
     /**
@@ -110,9 +110,9 @@ abstract class TaskStoreTestCase extends StoreTestCase
     #[DataProvider('nulReservations')]
     public function testReserveRejectsNulMetadataWithoutClaiming(array $queues, string $owner): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
         try {
-            $this->store->reserve($queues, $owner, 60);
+            $this->store()->reserve($queues, $owner, 60);
             $this->fail('NUL metadata must be rejected');
         } catch (InvalidArgumentException $e) {
             $this->assertStringContainsString('NUL', $e->getMessage());
@@ -134,34 +134,34 @@ abstract class TaskStoreTestCase extends StoreTestCase
     #[DataProvider('settlements')]
     public function testSettlementRejectsNulOwnerWithoutChangingTheTask(string $operation): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
         $impostor = new ReservedTask($task->id, $task->name, $task->payload, $task->attempts, $task->owner . "\0other");
         try {
             match ($operation) {
-                'complete' => $this->store->complete($impostor),
-                'release' => $this->store->release($impostor, 0, 'Retry'),
-                default => $this->store->fail($impostor, 'Failed'),
+                'complete' => $this->store()->complete($impostor),
+                'release' => $this->store()->release($impostor, 0, 'Retry'),
+                default => $this->store()->fail($impostor, 'Failed'),
             };
             $this->fail('NUL owner tokens must be rejected');
         } catch (InvalidArgumentException $e) {
             $this->assertStringContainsString('NUL', $e->getMessage());
         }
         $this->assertSame(1, $this->countTasks('running'));
-        $this->assertTrue($this->store->complete($task));
+        $this->assertTrue($this->store()->complete($task));
     }
 
     public function testTextMetadataPreservesUnicodeAndLiteralNulEscapes(): void
     {
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement')));
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'courriels-é', '{}', '')));
-        $this->assertFalse($this->store->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'courriels-é', '{}', 'événement')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'courriels-é', '{}', '')));
+        $this->assertFalse($this->store()->push(new EncodedTask('a', 'courriels-é', '{}', 'événement\\u0000')));
         $task = $this->reserve('courriels-é', 'propriétaire-é');
         $this->assertNotNull($task);
         $this->assertSame('propriétaire-é', $task->owner);
-        $this->assertTrue($this->store->complete($task));
+        $this->assertTrue($this->store()->complete($task));
     }
 
     public function testPayloadsRoundTripVerbatim(): void
@@ -169,7 +169,7 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $registry = (new TaskRegistry())->register('test.typed', TypedTask::class);
         // Key order and NUL escapes survive storage (JSONB would lose both)
         $task = new TypedTask('doc-1', 1, 0.5, false, ['zz' => 1, 'a' => ['y' => 2, 'b' => 3], "nul\0" => "\0"], Priority::Low);
-        $this->store->push($registry->encode($task));
+        $this->store()->push($registry->encode($task));
 
         $reserved = $this->reserve();
 
@@ -182,11 +182,11 @@ abstract class TaskStoreTestCase extends StoreTestCase
 
     public function testErrorsAreStoredAsBoundedValidText(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
-        $this->store->push(new EncodedTask('b', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('b', 'default', '{}'));
 
-        $this->assertTrue($this->store->fail($this->reserve() ?? $this->fail('No task'), "Bad \xFF byte\0"));
-        $this->assertTrue($this->store->release($this->reserve() ?? $this->fail('No task'), 0, str_repeat('é', 3000)));
+        $this->assertTrue($this->store()->fail($this->reserve() ?? $this->fail('No task'), "Bad \xFF byte\0"));
+        $this->assertTrue($this->store()->release($this->reserve() ?? $this->fail('No task'), 0, str_repeat('é', 3000)));
 
         $this->assertSame('Bad ? byte', $this->row(1)['last_error']);
         $error = $this->row(2)['last_error'];
@@ -198,52 +198,55 @@ abstract class TaskStoreTestCase extends StoreTestCase
 
     public function testReservesOnlyTheRequestedQueues(): void
     {
-        $this->store->push(new EncodedTask('a', 'mail', '{}'));
+        $this->store()->push(new EncodedTask('a', 'mail', '{}'));
 
         $this->assertNull($this->reserve('default'));
-        $this->assertSame('a', $this->store->reserve(['default', 'mail'], 'owner', 60)?->name);
+        $this->assertSame('a', $this->store()->reserve(['default', 'mail'], 'owner', 60)?->name);
     }
 
     public function testDeduplicatesByNameAndKeyAcrossStatuses(): void
     {
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}', 'event-1')));
-        $this->assertFalse($this->store->push(new EncodedTask('a', 'default', '{}', 'event-1')));
-        $this->assertTrue($this->store->push(new EncodedTask('b', 'default', '{}', 'event-1')));
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}')));
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1')));
+        $this->assertFalse($this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1')));
+        $this->assertTrue($this->store()->push(new EncodedTask('b', 'default', '{}', 'event-1')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'default', '{}')));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'default', '{}')));
 
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $this->store->complete($task);
-        $this->assertFalse($this->store->push(new EncodedTask('a', 'default', '{}', 'event-1')), 'Done tasks keep their key until purged');
+        $this->store()->complete($task);
+        $this->assertFalse(
+            $this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1')),
+            'Done tasks keep their key until purged',
+        );
 
         $this->age(3600);
-        $this->assertSame(1, $this->store->purge(60));
-        $this->assertTrue($this->store->push(new EncodedTask('a', 'default', '{}', 'event-1')));
+        $this->assertSame(1, $this->store()->purge(60));
+        $this->assertTrue($this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1')));
     }
 
     public function testOnlyTheOwnerSettlesATask(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
         $impostor = new ReservedTask($task->id, $task->name, $task->payload, $task->attempts, 'owner-b');
 
-        $this->assertFalse($this->store->complete($impostor));
-        $this->assertFalse($this->store->fail($impostor, 'no'));
-        $this->assertFalse($this->store->release($impostor, 0, 'no'));
-        $this->assertTrue($this->store->complete($task));
-        $this->assertFalse($this->store->complete($task), 'A settled task is no longer owned');
+        $this->assertFalse($this->store()->complete($impostor));
+        $this->assertFalse($this->store()->fail($impostor, 'no'));
+        $this->assertFalse($this->store()->release($impostor, 0, 'no'));
+        $this->assertTrue($this->store()->complete($task));
+        $this->assertFalse($this->store()->complete($task), 'A settled task is no longer owned');
         $this->assertSame('done', $this->row($task->id)['status']);
     }
 
     public function testReleaseDelaysTheNextAttempt(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
 
-        $this->assertTrue($this->store->release($task, 30, 'Timeout'));
+        $this->assertTrue($this->store()->release($task, 30, 'Timeout'));
         $this->assertNull($this->reserve(), 'Not available before its delay');
 
         $this->age(31);
@@ -254,31 +257,31 @@ abstract class TaskStoreTestCase extends StoreTestCase
 
     public function testRecoversExpiredLeasesOnly(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
-        $this->store->push(new EncodedTask('b', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('b', 'default', '{}'));
         $crashed = $this->reserve();
         $this->assertNotNull($crashed);
 
-        $this->assertSame(0, $this->store->recover(), 'A live lease is kept');
+        $this->assertSame(0, $this->store()->recover(), 'A live lease is kept');
         $this->age(61);
         $alive = $this->reserve(owner: 'owner-b');
-        $this->assertSame(1, $this->store->recover());
+        $this->assertSame(1, $this->store()->recover());
 
         $recovered = $this->reserve(owner: 'owner-c');
         $this->assertSame([$crashed->id, 2], [$recovered?->id, $recovered?->attempts]);
-        $this->assertFalse($this->store->complete($crashed), 'The crashed owner lost the task');
+        $this->assertFalse($this->store()->complete($crashed), 'The crashed owner lost the task');
         $this->assertNotNull($alive);
-        $this->assertTrue($this->store->complete($alive));
+        $this->assertTrue($this->store()->complete($alive));
     }
 
     public function testFailedTasksCanBeListedAndRetried(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{"n":1}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{"n":1}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $this->store->fail($task, 'Broken');
+        $this->store()->fail($task, 'Broken');
 
-        $failed = $this->store->failed();
+        $failed = $this->store()->failed();
         $this->assertCount(1, $failed);
         $this->assertGreaterThan(0, $failed[0]['created_at']);
         $this->assertGreaterThanOrEqual($failed[0]['created_at'], $failed[0]['finished_at']);
@@ -296,8 +299,8 @@ abstract class TaskStoreTestCase extends StoreTestCase
             ],
             $failed[0],
         );
-        $this->assertTrue($this->store->retryFailed($task->id));
-        $this->assertFalse($this->store->retryFailed($task->id));
+        $this->assertTrue($this->store()->retryFailed($task->id));
+        $this->assertFalse($this->store()->retryFailed($task->id));
         $this->assertSame('Broken', $this->row($task->id)['last_error']);
         $this->assertSame(1, $this->reserve()?->attempts);
     }
@@ -305,54 +308,54 @@ abstract class TaskStoreTestCase extends StoreTestCase
     public function testDeleteFailedOnlyDeletesFailedTasksAndFreesTheirKey(): void
     {
         $encoded = new EncodedTask('a', 'default', '{}', 'event-1');
-        $this->store->push($encoded);
-        $this->assertFalse($this->store->deleteFailed(1), 'Pending tasks are kept');
+        $this->store()->push($encoded);
+        $this->assertFalse($this->store()->deleteFailed(1), 'Pending tasks are kept');
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $this->assertFalse($this->store->deleteFailed($task->id), 'Running tasks are kept');
-        $this->store->fail($task, 'Broken');
+        $this->assertFalse($this->store()->deleteFailed($task->id), 'Running tasks are kept');
+        $this->store()->fail($task, 'Broken');
 
-        $this->assertTrue($this->store->deleteFailed($task->id));
-        $this->assertSame([], $this->store->failed());
-        $this->assertFalse($this->store->deleteFailed($task->id));
-        $this->assertFalse($this->store->deleteFailed(PHP_INT_MAX));
-        $this->assertTrue($this->store->push($encoded), 'Deleting frees the deduplication key');
+        $this->assertTrue($this->store()->deleteFailed($task->id));
+        $this->assertSame([], $this->store()->failed());
+        $this->assertFalse($this->store()->deleteFailed($task->id));
+        $this->assertFalse($this->store()->deleteFailed(PHP_INT_MAX));
+        $this->assertTrue($this->store()->push($encoded), 'Deleting frees the deduplication key');
 
         $done = $this->reserve();
         $this->assertNotNull($done);
-        $this->store->complete($done);
-        $this->assertFalse($this->store->deleteFailed($done->id), 'Done tasks are kept');
-        $this->assertFalse($this->store->push($encoded));
+        $this->store()->complete($done);
+        $this->assertFalse($this->store()->deleteFailed($done->id), 'Done tasks are kept');
+        $this->assertFalse($this->store()->push($encoded));
     }
 
     public function testPurgeKeepsRecentAndUnfinishedTasks(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
-        $this->store->push(new EncodedTask('b', 'default', '{}'));
-        $this->store->push(new EncodedTask('c', 'default', '{}'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
+        $this->store()->push(new EncodedTask('b', 'default', '{}'));
+        $this->store()->push(new EncodedTask('c', 'default', '{}'));
         $done = $this->reserve();
         $failed = $this->reserve();
         $this->assertNotNull($done);
         $this->assertNotNull($failed);
-        $this->store->complete($done);
-        $this->store->fail($failed, 'Broken');
+        $this->store()->complete($done);
+        $this->store()->fail($failed, 'Broken');
 
-        $this->assertSame(0, $this->store->purge(60));
+        $this->assertSame(0, $this->store()->purge(60));
         $this->age(120);
-        $this->assertSame(1, $this->store->purge(60));
+        $this->assertSame(1, $this->store()->purge(60));
         $this->assertSame(2, $this->countTasks());
-        $this->assertSame(1, $this->store->purge(60, 60), 'Failed tasks are purged on demand');
+        $this->assertSame(1, $this->store()->purge(60, 60), 'Failed tasks are purged on demand');
         $this->assertSame(['pending'], [$this->row(3)['status']]);
     }
 
     public function testFailedTasksKeepTheirDeduplicationKey(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}', 'event-1'));
+        $this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1'));
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $this->store->fail($task, 'Broken');
+        $this->store()->fail($task, 'Broken');
 
-        $this->assertFalse($this->store->push(new EncodedTask('a', 'default', '{}', 'event-1')));
-        $this->assertTrue($this->store->retryFailed($task->id));
+        $this->assertFalse($this->store()->push(new EncodedTask('a', 'default', '{}', 'event-1')));
+        $this->assertTrue($this->store()->retryFailed($task->id));
     }
 }

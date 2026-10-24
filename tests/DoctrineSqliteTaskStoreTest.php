@@ -54,7 +54,7 @@ final class DoctrineSqliteTaskStoreTest extends SqliteTaskStoreTest
 
     private function sqlite(): SqliteEngine
     {
-        $this->assertInstanceOf(SqliteEngine::class, $this->engine);
-        return $this->engine;
+        $this->assertInstanceOf(SqliteEngine::class, $this->engine());
+        return $this->engine();
     }
 }

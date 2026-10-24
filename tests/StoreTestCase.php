@@ -19,11 +19,12 @@ abstract class StoreTestCase extends TestCase
 {
     protected const TABLE = 'kaly_tasks_test';
 
-    protected Engine $engine;
+    // Private: tearDown() unsets them, and a hook in a subclass would forbid that
+    private Engine $engine;
 
-    protected PDO $pdo;
+    private PDO $pdo;
 
-    protected TaskStore $store;
+    private TaskStore $store;
 
     /**
      * Skips the test when the engine is unavailable.
@@ -46,6 +47,30 @@ abstract class StoreTestCase extends TestCase
         if (isset($this->engine)) {
             $this->engine->cleanUp();
         }
+    }
+
+    /**
+     * The engine of the concrete class.
+     */
+    protected function engine(): Engine
+    {
+        return $this->engine;
+    }
+
+    /**
+     * The handle the store under test writes through.
+     */
+    protected function pdo(): PDO
+    {
+        return $this->pdo;
+    }
+
+    /**
+     * The store under test, on the test table.
+     */
+    protected function store(): TaskStore
+    {
+        return $this->store;
     }
 
     /**

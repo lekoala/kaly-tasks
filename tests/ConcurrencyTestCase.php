@@ -20,21 +20,21 @@ abstract class ConcurrencyTestCase extends StoreTestCase
 
     public function testWorkersNeverRunATaskTwice(): void
     {
-        $this->pdo->exec('DROP TABLE IF EXISTS kaly_tasks_log');
-        $this->pdo->exec('CREATE TABLE kaly_tasks_log (number INTEGER NOT NULL, pid INTEGER NOT NULL)');
-        $tasks = new DatabaseTaskDispatcher($this->store, (new TaskRegistry())->register('test.log', LogTask::class));
-        $this->pdo->beginTransaction();
+        $this->pdo()->exec('DROP TABLE IF EXISTS kaly_tasks_log');
+        $this->pdo()->exec('CREATE TABLE kaly_tasks_log (number INTEGER NOT NULL, pid INTEGER NOT NULL)');
+        $tasks = new DatabaseTaskDispatcher($this->store(), (new TaskRegistry())->register('test.log', LogTask::class));
+        $this->pdo()->beginTransaction();
         for ($i = 1; $i <= self::TASKS; $i++) {
             $tasks->dispatch(new LogTask($i));
         }
-        $this->pdo->commit();
+        $this->pdo()->commit();
         // A database clock stepping back (a VM resync) would make the tasks
         // not due yet, and the workers would stop early
         $this->age(60);
 
         $processed = $this->runWorkers();
 
-        $log = new PdoConnection($this->pdo);
+        $log = new PdoConnection($this->pdo());
         $stats = $log->fetchAll(
             'SELECT count(*) AS runs, count(DISTINCT number) AS tasks, count(DISTINCT pid) AS workers FROM kaly_tasks_log',
         )[0];
@@ -42,7 +42,7 @@ abstract class ConcurrencyTestCase extends StoreTestCase
         $this->assertSame([self::TASKS, self::TASKS], [$stats['runs'], $stats['tasks']]);
         $this->assertGreaterThan(1, $stats['workers'], 'The work was shared');
         $this->assertSame(self::TASKS, $this->countTasks('done'));
-        $this->pdo->exec('DROP TABLE kaly_tasks_log');
+        $this->pdo()->exec('DROP TABLE kaly_tasks_log');
     }
 
     /**

@@ -17,19 +17,19 @@ class SqliteTaskStoreTest extends TaskStoreTestCase
     public function testRejectsUnsafeTableNames(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        new SqliteTaskStore(new PdoConnection($this->pdo), 'main.tasks');
+        new SqliteTaskStore(new PdoConnection($this->pdo()), 'main.tasks');
     }
 
     public function testReservationsFromSeveralConnectionsNeverOverlap(): void
     {
         for ($i = 0; $i < 10; $i++) {
-            $this->store->push(new EncodedTask('a', 'default', '{}'));
+            $this->store()->push(new EncodedTask('a', 'default', '{}'));
         }
-        $other = new SqliteTaskStore(new PdoConnection($this->engine->connect()), self::TABLE);
+        $other = new SqliteTaskStore(new PdoConnection($this->engine()->connect()), self::TABLE);
 
         $ids = [];
         for ($i = 0; $i < 5; $i++) {
-            $ids[] = $this->store->reserve(['default'], 'owner-a', 60)?->id;
+            $ids[] = $this->store()->reserve(['default'], 'owner-a', 60)?->id;
             $ids[] = $other->reserve(['default'], 'owner-b', 60)?->id;
         }
 
@@ -39,7 +39,7 @@ class SqliteTaskStoreTest extends TaskStoreTestCase
 
     public function testDispatchJoinsTheApplicationTransaction(): void
     {
-        $application = $this->engine->connect();
+        $application = $this->engine()->connect();
         $store = new SqliteTaskStore(new PdoConnection($application), self::TABLE);
 
         $application->beginTransaction();
@@ -56,15 +56,15 @@ class SqliteTaskStoreTest extends TaskStoreTestCase
 
     public function testPurgedIdsAreNotReused(): void
     {
-        $this->store->push(new EncodedTask('a', 'default', '{}'));
-        $task = $this->store->reserve(['default'], 'owner', 60);
+        $this->store()->push(new EncodedTask('a', 'default', '{}'));
+        $task = $this->store()->reserve(['default'], 'owner', 60);
         $this->assertNotNull($task);
-        $this->store->complete($task);
+        $this->store()->complete($task);
         $this->age(120);
-        $this->assertSame(1, $this->store->purge(60));
+        $this->assertSame(1, $this->store()->purge(60));
 
-        $this->store->push(new EncodedTask('b', 'default', '{}'));
+        $this->store()->push(new EncodedTask('b', 'default', '{}'));
 
-        $this->assertSame(2, $this->store->reserve(['default'], 'owner', 60)?->id);
+        $this->assertSame(2, $this->store()->reserve(['default'], 'owner', 60)?->id);
     }
 }
