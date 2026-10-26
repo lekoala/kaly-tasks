@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking:** require Kaly `^0.6` for the `ScheduledTaskDispatcher` capability.
+  `DatabaseTaskDispatcher` implements it and remains usable as `TaskDispatcher`.
+- **Breaking:** `TaskStore::push()` accepts `?DateTimeImmutable $notBefore = null`;
+  update custom stores. Deduplicated insertions preserve the existing deadline
+  and payload. Scheduling requires no schema migration or additional scheduler.
+- Add optional `?DateTimeImmutable $notBefore` to database task dispatch for
+  scheduled execution on PostgreSQL, MySQL and SQLite. Dates are normalized to
+  UTC; PostgreSQL and MySQL preserve microseconds, while SQLite rounds up to
+  whole seconds. SQL time remains authoritative for queue operations.
 - Add `MysqlTaskStore` for MySQL 8.0.16+ and Aurora MySQL v3 writer endpoints,
   with short `FOR UPDATE SKIP LOCKED` reservations, UTC database timestamps,
   verbatim payloads and SHA-256 deduplication keys. Queue names and owners are

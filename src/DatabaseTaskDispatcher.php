@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks;
 
-use Kaly\Task\TaskDispatcher;
+use DateTimeImmutable;
+use Kaly\Task\ScheduledTaskDispatcher;
 use Kaly\Tasks\Store\TaskStore;
 
 /**
@@ -15,17 +16,18 @@ use Kaly\Tasks\Store\TaskStore;
  * durable with the commit and disappears with a rollback. On a dedicated
  * connection, it is durable immediately, independently of the business
  * transaction. A task already stored with the same deduplication key is
- * silently skipped.
+ * silently skipped, preserving its original deadline. `notBefore` is a lower
+ * bound on execution, normalized by the store.
  */
-final readonly class DatabaseTaskDispatcher implements TaskDispatcher
+final readonly class DatabaseTaskDispatcher implements ScheduledTaskDispatcher
 {
     public function __construct(
         private TaskStore $store,
         private TaskRegistry $registry,
     ) {}
 
-    public function dispatch(object $task): void
+    public function dispatch(object $task, ?DateTimeImmutable $notBefore = null): void
     {
-        $this->store->push($this->registry->encode($task));
+        $this->store->push($this->registry->encode($task), $notBefore);
     }
 }

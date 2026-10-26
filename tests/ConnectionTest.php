@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use DateTimeImmutable;
 use Doctrine\DBAL\Connections\PrimaryReadReplicaConnection;
 use Doctrine\DBAL\DriverManager;
 use Kaly\Tasks\Connection\DoctrineConnection;
@@ -32,8 +33,17 @@ class ConnectionTest extends StoreTestCase
         yield 'cycle' => ['cycle'];
     }
 
-    #[DataProvider('connections')]
-    public function testDispatchJoinsTheApplicationTransaction(string $library): void
+    /** @return iterable<string,array{string,bool}> */
+    public static function dispatches(): iterable
+    {
+        foreach (['pdo', 'doctrine', 'cycle'] as $library) {
+            yield $library . ' immediate' => [$library, false];
+            yield $library . ' scheduled' => [$library, true];
+        }
+    }
+
+    #[DataProvider('dispatches')]
+    public function testDispatchJoinsTheApplicationTransaction(string $library, bool $scheduled): void
     {
         $application = match ($library) {
             'pdo' => $this->postgres()->viaPdo(),
@@ -43,17 +53,22 @@ class ConnectionTest extends StoreTestCase
         $store = new PostgresTaskStore($application['connection'], self::TABLE);
         $tasks = new DatabaseTaskDispatcher($store, (new TaskRegistry())->register('test.record', RecordTask::class));
 
+        $notBefore = $scheduled ? new DateTimeImmutable('+1 hour') : null;
         $application['begin']();
-        $tasks->dispatch(new RecordTask('rolled back'));
+        $tasks->dispatch(new RecordTask('rolled back'), notBefore: $notBefore);
         $application['rollback']();
         $this->assertSame(0, $this->countTasks());
 
         $application['begin']();
-        $tasks->dispatch(new RecordTask('committed'));
+        $tasks->dispatch(new RecordTask('committed'), notBefore: $notBefore);
         $this->assertSame(0, $this->countTasks(), 'Invisible to other connections before the commit');
         $application['commit']();
         $this->assertSame(1, $this->countTasks());
 
+        if ($scheduled) {
+            $this->assertNull($store->reserve(['default'], 'owner', 60));
+            $this->age(3610);
+        }
         $reserved = $store->reserve(['default'], 'owner', 60);
         $this->assertNotNull($reserved);
         $this->assertSame(['test.record', '{"entry":"committed"}'], [$reserved->name, $reserved->payload]);

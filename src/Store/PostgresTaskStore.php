@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Store;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\EncodedTask;
@@ -70,7 +72,7 @@ final readonly class PostgresTaskStore implements TaskStore
         ];
     }
 
-    public function push(EncodedTask $task): bool
+    public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
@@ -78,9 +80,15 @@ final readonly class PostgresTaskStore implements TaskStore
             StoreValues::assertNoNul($task->deduplicationKey, 'The deduplication key');
         }
         return $this->connection->execute(
-            "INSERT INTO {$this->table} (queue, name, payload, dedup_key) VALUES (?, ?, CAST(? AS JSON), ?)
+            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, available_at) VALUES (?, ?, CAST(? AS JSON), ?, COALESCE(CAST(? AS TIMESTAMPTZ), now()))
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
-            [$task->queue, $task->name, $task->payload, $task->deduplicationKey],
+            [
+                $task->queue,
+                $task->name,
+                $task->payload,
+                $task->deduplicationKey,
+                $notBefore?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.uP'),
+            ],
         ) === 1;
     }
 

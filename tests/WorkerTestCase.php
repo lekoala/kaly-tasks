@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use DateTimeImmutable;
 use Kaly\Di\Container;
 use Kaly\Di\Definitions;
 use Kaly\Di\Injector;
@@ -144,6 +145,16 @@ abstract class WorkerTestCase extends StoreTestCase
         $this->assertSame(2, $this->work());
         $this->assertSame(['first', 'second'], $this->journal->entries);
         $this->assertSame(2, $this->countTasks('done'));
+    }
+
+    public function testWorkerSkipsScheduledTasksUntilTheyAreDue(): void
+    {
+        $this->tasks->dispatch(new RecordTask('scheduled'), notBefore: new DateTimeImmutable('+1 hour'));
+        $this->assertSame(0, $this->work());
+        $this->assertSame([], $this->journal->entries);
+        $this->age(3610);
+        $this->assertSame(1, $this->work());
+        $this->assertSame(['scheduled'], $this->journal->entries);
     }
 
     public function testRetriesThenFails(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\EncodedTask;
@@ -14,6 +15,18 @@ use PDOException;
 class MysqlTaskStoreTest extends TaskStoreTestCase
 {
     use OnMysql;
+
+    public function testSchedulingPreservesMicrosecondsInUtcRegardlessOfSessionTimezone(): void
+    {
+        $this->pdo()->exec("SET time_zone = '+05:00'");
+        try {
+            $store = new MysqlTaskStore(new PdoConnection($this->pdo()), self::TABLE);
+            $store->push(new EncodedTask('fractional', 'default', '{}'), new DateTimeImmutable('2030-01-01T05:30:00.123456+05:30'));
+            $this->assertSame('2030-01-01 00:00:00.123456', $this->row(1)['available_at']);
+        } finally {
+            $this->pdo()->exec("SET time_zone = '+00:00'");
+        }
+    }
 
     public function testSkipsLockedTasksAndCommitsBeforeReturning(): void
     {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\EncodedTask;
 use Kaly\Tasks\Store\ReservedTask;
@@ -20,6 +21,72 @@ abstract class TaskStoreTestCase extends StoreTestCase
     private function reserve(string $queue = 'default', string $owner = 'owner-a'): ?ReservedTask
     {
         return $this->store()->reserve([$queue], $owner, 60);
+    }
+
+    public function testFutureTasksBecomeAvailableOnlyAfterTheirDeadline(): void
+    {
+        $future = new DateTimeImmutable('+1 hour');
+        $this->store()->push(new EncodedTask('scheduled', 'default', '{}'), notBefore: $future);
+        $this->store()->push(new EncodedTask('immediate', 'default', '{}'));
+        $this->assertSame('immediate', $this->reserve()?->name);
+        $this->assertNull($this->reserve());
+        $this->age(3610);
+        $task = $this->reserve();
+        $this->assertNotNull($task);
+        $this->assertSame('scheduled', $task->name);
+        $this->assertSame(1, $task->attempts);
+        $this->assertTrue($this->store()->release($task, 30, 'retry'));
+        $this->assertNull($this->reserve());
+        $this->age(31);
+        $this->assertSame(2, $this->reserve()?->attempts);
+    }
+
+    public function testPastDatesAreImmediatelyEligible(): void
+    {
+        $this->store()->push(new EncodedTask('past', 'default', '{}'), new DateTimeImmutable('2000-01-01T00:00:00Z'));
+        $this->assertSame('past', $this->reserve()?->name);
+    }
+
+    public function testEquivalentInstantsHaveTheSameAvailability(): void
+    {
+        $this->store()->push(new EncodedTask('utc', 'default', '{}'), new DateTimeImmutable('2030-01-01T10:00:00.123456Z'));
+        $this->store()->push(new EncodedTask('offset', 'default', '{}'), new DateTimeImmutable('2030-01-01T15:30:00.123456+05:30'));
+        $this->assertSame($this->row(1)['available_at'], $this->row(2)['available_at']);
+    }
+
+    public function testDeduplicationDoesNotBringADeadlineForward(): void
+    {
+        $task = new EncodedTask('scheduled', 'default', '{"version":1}', 'delivery');
+        $this->assertTrue($this->store()->push($task, new DateTimeImmutable('+1 hour')));
+        $original = $this->row(1);
+        $this->assertFalse($this->store()->push(
+            new EncodedTask('scheduled', 'default', '{"version":2}', 'delivery'),
+            new DateTimeImmutable('2000-01-01Z'),
+        ));
+        $this->assertSame($original, $this->row(1));
+        $this->assertNull($this->reserve());
+        $this->age(3610);
+        $this->assertSame('{"version":1}', $this->reserve()?->payload);
+    }
+
+    public function testDeduplicationDoesNotPostponeAnExistingTask(): void
+    {
+        $task = new EncodedTask('scheduled', 'default', '{}', 'delivery');
+        $this->assertTrue($this->store()->push($task));
+        $this->assertFalse($this->store()->push($task, new DateTimeImmutable('+1 day')));
+        $this->assertSame('scheduled', $this->reserve()?->name);
+    }
+
+    public function testDifferentDeadlinesDetermineReservationOrder(): void
+    {
+        $this->store()->push(new EncodedTask('later', 'default', '{}'), new DateTimeImmutable('+2 hours'));
+        $this->store()->push(new EncodedTask('earlier', 'default', '{}'), new DateTimeImmutable('+1 hour'));
+        $this->assertNull($this->reserve());
+        $this->age(3610);
+        $this->assertSame('earlier', $this->reserve()?->name);
+        $this->assertNull($this->reserve());
+        $this->age(3600);
+        $this->assertSame('later', $this->reserve()?->name);
     }
 
     /**

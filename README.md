@@ -2,7 +2,7 @@
 
 A durable SQL task queue for [Kaly](https://github.com/lekoala/kaly) tasks.
 
-Kaly defines the task model and the `Kaly\Task\TaskDispatcher` contract. This
+Kaly defines the task model and its dispatcher contracts. This
 package is one optional engine: it stores tasks in PostgreSQL, MySQL or SQLite and
 runs them in supervised worker processes. A durable task queue without a queue
 server. Application code does not change:
@@ -30,6 +30,41 @@ final readonly class GeneratePdf
 
 It is a specialized engine, not a messaging framework: no attributes, no
 handler registry, no events, no transports.
+
+## Scheduling
+
+```php
+$tasks->dispatch(new DeliverSms($deliveryId), notBefore: $clock->now()->modify('+10 seconds'));
+$tasks->dispatch(new SendReminder($appointmentId), notBefore: $reminderDate);
+```
+
+`notBefore` is an optional `DateTimeImmutable` lower bound. Without it, dispatch
+is immediate; a past date is immediately eligible. A future task cannot be
+reserved before its deadline, but polling and worker load may make it run later.
+`stopWhenEmpty` stops when nothing is due, even if future tasks remain queued.
+
+The application expresses business dates with its injected PSR-20 clock. The
+stores keep SQL time for availability comparisons, leases, retries and retention;
+application and database clocks must be synchronized for relative business delays.
+Dates are normalized at the storage boundary: PostgreSQL stores timezone-aware
+instants and MySQL stores UTC `DATETIME(6)`, both preserving microseconds. SQLite
+keeps integer epoch seconds and rounds fractional deadlines up to the next second,
+so precision never makes a task eligible early. No schema migration is needed.
+
+For portable dates, use UTC years 1000 through 9999, the range of MySQL
+`DATETIME(6)`. Dates outside this range are unsupported; use strict SQL mode so
+MySQL rejects out-of-range dates instead of coercing them to a zero date.
+PostgreSQL dates before the common era are also unsupported by this date codec.
+
+Deduplication preserves the existing task, including its payload and deadline:
+a second dispatch with the same key neither advances nor postpones it. Retries
+use their normal SQL-clock delay after execution, independently of the original
+deadline. A scheduled insertion joins the application transaction as usual.
+
+Requires Kaly 0.6 for `Kaly\Task\ScheduledTaskDispatcher`. Services that schedule
+work depend on this interface; services that only submit tasks can keep
+`Kaly\Task\TaskDispatcher`. The direct dispatcher offers the minimal contract.
+Kaly's recording dispatcher supports scheduling with an injectable test clock.
 
 ## Guarantees
 
@@ -174,9 +209,10 @@ foreach ($store->schema() as $statement) {
 `PostgresTaskStore` takes a table name, optionally schema-qualified
 (`queue.tasks`). `SqliteTaskStore` takes a plain table name.
 
-Register the persistable types and wire the dispatcher in the composition root:
+Register task types and bind both contracts to the same dispatcher instance:
 
 ```php
+use Kaly\Task\ScheduledTaskDispatcher;
 use Kaly\Task\TaskDispatcher;
 use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\DatabaseTaskDispatcher;
@@ -192,10 +228,11 @@ $app->configure(fn(Definitions $di) => $di
             retry: new RetryPolicy(maxAttempts: 8, delay: 30),
             deduplicateBy: 'eventId',
         ))
-    ->set(TaskDispatcher::class, static fn(ContainerInterface $c) => new DatabaseTaskDispatcher(
+    ->set(ScheduledTaskDispatcher::class, static fn(ContainerInterface $c) => new DatabaseTaskDispatcher(
         new PostgresTaskStore(new DoctrineConnection($c->get(EntityManagerInterface::class)->getConnection())),
         $c->get(TaskRegistry::class),
-    )));
+    ))
+    ->alias(TaskDispatcher::class, ScheduledTaskDispatcher::class));
 ```
 
 A persistable task has only public promoted constructor parameters, typed

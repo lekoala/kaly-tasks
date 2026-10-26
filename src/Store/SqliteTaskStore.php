@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Store;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\EncodedTask;
@@ -69,17 +70,19 @@ final readonly class SqliteTaskStore implements TaskStore
         ];
     }
 
-    public function push(EncodedTask $task): bool
+    public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
         if ($task->deduplicationKey !== null) {
             StoreValues::assertNoNul($task->deduplicationKey, 'The deduplication key');
         }
+        // The schema and SQL clock use whole seconds: round up, never execute early
+        $availableAt = $notBefore === null ? null : $notBefore->getTimestamp() + ($notBefore->format('u') === '000000' ? 0 : 1);
         return $this->connection->execute(
-            "INSERT INTO {$this->table} (queue, name, payload, dedup_key) VALUES (?, ?, ?, ?)
+            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, available_at) VALUES (?, ?, ?, ?, COALESCE(?, unixepoch()))
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
-            [$task->queue, $task->name, $task->payload, $task->deduplicationKey],
+            [$task->queue, $task->name, $task->payload, $task->deduplicationKey, $availableAt],
         ) === 1;
     }
 

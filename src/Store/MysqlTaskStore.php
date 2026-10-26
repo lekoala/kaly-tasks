@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Store;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\TransactionalConnection;
@@ -58,7 +60,7 @@ final readonly class MysqlTaskStore implements TaskStore
         ];
     }
 
-    public function push(EncodedTask $task): bool
+    public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
@@ -69,8 +71,15 @@ final readonly class MysqlTaskStore implements TaskStore
         $hash = $task->deduplicationKey === null ? null : hash('sha256', strlen($task->name) . ':' . $task->name . $task->deduplicationKey);
         try {
             return $this->connection->execute(
-                "INSERT INTO `{$this->table}` (queue, name, payload, dedup_key, dedup_hash) VALUES (?, ?, ?, ?, UNHEX(?))",
-                [$task->queue, $task->name, $task->payload, $task->deduplicationKey, $hash],
+                "INSERT INTO `{$this->table}` (queue, name, payload, dedup_key, dedup_hash, available_at) VALUES (?, ?, ?, ?, UNHEX(?), COALESCE(?, UTC_TIMESTAMP(6)))",
+                [
+                    $task->queue,
+                    $task->name,
+                    $task->payload,
+                    $task->deduplicationKey,
+                    $hash,
+                    $notBefore?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
+                ],
             ) === 1;
         } catch (Throwable $error) {
             // Only duplicate keys are skipped, never truncation or invalid data

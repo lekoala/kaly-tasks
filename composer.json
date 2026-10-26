@@ -22,7 +22,7 @@
     "require": {
         "php": "^8.3",
         "ext-pdo": "*",
-        "lekoala/kaly": "^0.4",
+        "lekoala/kaly": "^0.6",
         "lekoala/kaly-di": "^0.4",
         "psr/log": "^1.0 || ^2.0 || ^3.0"
     },

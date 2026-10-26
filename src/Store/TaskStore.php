@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Store;
 
+use DateTimeImmutable;
 use Kaly\Tasks\EncodedTask;
 
 /**
@@ -28,9 +29,14 @@ interface TaskStore
     public function schema(): array;
 
     /**
+     * With no date, availability uses the database clock. A date in the past is
+     * immediately eligible; a future date is a lower bound, not an execution promise.
+     * Stores normalize dates to UTC and round up when precision is limited.
+     * Deduplication never changes an existing task's availability or payload.
+     *
      * @return bool False when a task with the same name and deduplication key is already stored
      */
-    public function push(EncodedTask $task): bool;
+    public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool;
 
     /**
      * Leases the next available task of the given queues to a new owner.

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\EncodedTask;
@@ -13,6 +14,14 @@ use Kaly\Tasks\Tests\Engine\OnSqlite;
 class SqliteTaskStoreTest extends TaskStoreTestCase
 {
     use OnSqlite;
+
+    public function testSchedulingRoundsFractionalSecondsUp(): void
+    {
+        $this->store()->push(new EncodedTask('fractional', 'default', '{}'), new DateTimeImmutable('2030-01-01T00:00:00.000001Z'));
+        $this->assertSame(1_893_456_001, $this->row(1)['available_at']);
+        $this->store()->push(new EncodedTask('whole', 'default', '{}'), new DateTimeImmutable('2030-01-01T00:00:00Z'));
+        $this->assertSame(1_893_456_000, $this->row(2)['available_at']);
+    }
 
     public function testRejectsUnsafeTableNames(): void
     {
