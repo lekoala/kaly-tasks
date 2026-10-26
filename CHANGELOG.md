@@ -6,7 +6,9 @@
   with short `FOR UPDATE SKIP LOCKED` reservations, UTC database timestamps,
   verbatim payloads and SHA-256 deduplication keys. Queue names and owners are
   limited to 255 bytes. Add MySQL integration, concurrency and transaction
-  tests, and a MySQL service to Compose and CI.
+  tests, and a MySQL service to Compose and CI. Reservations poll queues in
+  shuffled order through the pending index, preserving availability ordering
+  within each queue without locking all ready tasks during a filesort.
 - Add `TransactionalConnection`, implemented by PDO, Doctrine and Cycle.
   Its callback runs on a pinned primary connection and commits before returning;
   existing transactions are refused for reservation. Dispatch still joins the

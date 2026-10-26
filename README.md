@@ -142,6 +142,11 @@ transaction. Database errors propagate and the supervisor restarts the worker;
 an uncertain commit is recovered through the lease, without running the task
 on the failed reservation.
 
+MySQL polls queues individually through the `pending` index to avoid a filesort
+locking every ready task across several queues. Queue order is shuffled for each
+reservation; ordering by availability and ID is preserved within each queue.
+There is no global FIFO guarantee across queues.
+
 Times are UTC `DATETIME(6)` values computed by the database, independently of
 the session time zone. Payloads use `LONGTEXT` to preserve their exact JSON text.
 Deduplication indexes a SHA-256 hash of the task name and key, compared bytewise,

@@ -96,28 +96,28 @@ final readonly class MysqlTaskStore implements TaskStore
         }
         StoreValues::assertNoNul($owner, 'The owner token');
         StoreValues::assertDuration($leaseSeconds, 'The lease', 1);
-        $placeholders = implode(', ', array_fill(0, count($queues), '?'));
-        return $this->connection->transaction(function (Connection $connection) use (
-            $queues,
-            $owner,
-            $leaseSeconds,
-            $placeholders,
-        ): ?ReservedTask {
-            $row = $connection->fetchAll("SELECT id, name, payload, attempts FROM `{$this->table}`
-                WHERE status = 'pending' AND queue IN ({$placeholders}) AND available_at <= UTC_TIMESTAMP(6)
-                ORDER BY available_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", $queues)[0] ?? null;
-            if ($row === null) {
-                return null;
+        // One ordered index range per queue avoids filesort locking every due row.
+        // Vary the first queue so a busy queue does not always take precedence.
+        shuffle($queues);
+        return $this->connection->transaction(function (Connection $connection) use ($queues, $owner, $leaseSeconds): ?ReservedTask {
+            foreach ($queues as $queue) {
+                $row = $connection->fetchAll("SELECT id, name, payload, attempts FROM `{$this->table}` FORCE INDEX (pending)
+                    WHERE status = 'pending' AND queue = ? AND available_at <= UTC_TIMESTAMP(6)
+                    ORDER BY available_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", [$queue])[0] ?? null;
+                if ($row === null) {
+                    continue;
+                }
+                $task = StoreValues::reserved($row, $owner);
+                $connection->execute(
+                    "UPDATE `{$this->table}`
+                    SET status = 'running', owner = ?, attempts = attempts + 1,
+                        lease_until = UTC_TIMESTAMP(6) + INTERVAL ? SECOND
+                    WHERE id = ?",
+                    [$owner, $leaseSeconds, $task->id],
+                );
+                return new ReservedTask($task->id, $task->name, $task->payload, $task->attempts + 1, $owner);
             }
-            $task = StoreValues::reserved($row, $owner);
-            $connection->execute(
-                "UPDATE `{$this->table}`
-                SET status = 'running', owner = ?, attempts = attempts + 1,
-                    lease_until = UTC_TIMESTAMP(6) + INTERVAL ? SECOND
-                WHERE id = ?",
-                [$owner, $leaseSeconds, $task->id],
-            );
-            return new ReservedTask($task->id, $task->name, $task->payload, $task->attempts + 1, $owner);
+            return null;
         });
     }
 
