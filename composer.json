@@ -1,6 +1,6 @@
 {
     "name": "lekoala/kaly-tasks",
-    "description": "Durable PostgreSQL or SQLite task queue for Kaly invocable tasks",
+    "description": "Durable PostgreSQL, MySQL or SQLite task queue for Kaly invocable tasks",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -15,6 +15,7 @@
         "jobs",
         "worker",
         "postgresql",
+        "mysql",
         "sqlite",
         "outbox"
     ],
@@ -34,6 +35,7 @@
     },
     "suggest": {
         "ext-pcntl": "Graceful shutdown on signals and hard task timeouts in the worker",
+        "ext-pdo_mysql": "MySQL 8 and Aurora MySQL task store",
         "ext-pdo_pgsql": "PostgreSQL task store",
         "ext-pdo_sqlite": "SQLite task store",
         "cycle/database": "Share a Cycle database through Kaly\\Tasks\\Connection\\CycleConnection",

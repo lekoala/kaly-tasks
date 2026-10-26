@@ -3,7 +3,7 @@
 A durable SQL task queue for [Kaly](https://github.com/lekoala/kaly) tasks.
 
 Kaly defines the task model and the `Kaly\Task\TaskDispatcher` contract. This
-package is one optional engine: it stores tasks in PostgreSQL or SQLite and
+package is one optional engine: it stores tasks in PostgreSQL, MySQL or SQLite and
 runs them in supervised worker processes. A durable task queue without a queue
 server. Application code does not change:
 
@@ -64,23 +64,24 @@ The connection given to the dispatcher decides what `dispatch()` guarantees:
 | A dedicated queue database | The task is durable immediately, independently of the business transaction |
 
 With a dedicated database, the business commit and the dispatch are two
-separate writes: dispatch after the commit, and let tasks tolerate missing or
-changed data.
+separate writes. For reliable publication, write a transactional application
+outbox and publish it idempotently: a process can crash between the business
+commit and a direct dispatch. Tasks must also tolerate changed business data.
 
 The worker always uses its own connection to the queue database.
 
 ## Stores
 
-Both stores give the same guarantees and pass the same test suite. Use the
+All three stores give the same guarantees and pass the same test suite. Use the
 database the application already has: on the application connection, a
 dispatch joins the business transaction.
 
-| | `PostgresTaskStore` | `SqliteTaskStore` |
-|---|---|---|
-| Hosts | Workers on any number of hosts | The application and its workers on one host |
-| Reservation | `FOR UPDATE SKIP LOCKED`: workers never wait for each other | One short `UPDATE … RETURNING`: reservations queue up, task runs do not |
-| Clock | The database clock | The host clock, in whole seconds |
-| Requires | PostgreSQL | SQLite 3.38 through pdo_sqlite |
+| | `PostgresTaskStore` | `SqliteTaskStore` | `MysqlTaskStore` |
+|---|---|---|---|
+| Hosts | Any number of hosts | One host | Any number of hosts |
+| Reservation | One statement with `SKIP LOCKED` | One `UPDATE ... RETURNING` | Short transaction with `SKIP LOCKED` |
+| Clock | Database | Host, in whole seconds | Database, UTC microseconds |
+| Requires | PostgreSQL | SQLite 3.38 through pdo_sqlite | MySQL 8.0.16+ / Aurora MySQL v3, InnoDB |
 
 The SQLite store does not support ext-sqlite3 (Doctrine's `sqlite3` driver):
 it runs a statement again when its rows are fetched, so a reservation would
@@ -108,7 +109,7 @@ connection settings to you:
 
 ## Connections
 
-The store needs two operations, behind `Kaly\Tasks\Connection\Connection`:
+The base store connection needs two operations, behind `Kaly\Tasks\Connection\Connection`:
 
 | Library | Connection |
 |---|---|
@@ -119,6 +120,41 @@ The store needs two operations, behind `Kaly\Tasks\Connection\Connection`:
 Statements run on the given connection, inside its current transaction. An
 EntityManager or a Cycle unit of work opened per operation does not matter: the
 transaction belongs to the shared connection.
+
+MySQL also requires `TransactionalConnection`, implemented by all three adapters.
+Its `transaction()` callback receives a connection pinned to the primary for the
+whole transaction, commits before returning and rolls back on failure. Existing
+transactions are refused: a reservation must release its locks before executing
+the task. Dispatch still joins an existing application transaction normally.
+
+## MySQL and Aurora
+
+```php
+$pdo = new PDO($writerDsn, $user, $password);
+$store = new MysqlTaskStore(new PdoConnection($pdo));
+```
+
+Requires MySQL 8.0.16+ with InnoDB, or Aurora MySQL v3. Use the writer endpoint
+for dispatch, reservation and maintenance. Reservations select with
+`FOR UPDATE SKIP LOCKED`, update the owner and lease, then commit before the
+worker invokes the task. The worker uses its own connection without an existing
+transaction. Database errors propagate and the supervisor restarts the worker;
+an uncertain commit is recovered through the lease, without running the task
+on the failed reservation.
+
+Times are UTC `DATETIME(6)` values computed by the database, independently of
+the session time zone. Payloads use `LONGTEXT` to preserve their exact JSON text.
+Deduplication indexes a SHA-256 hash of the task name and key, compared bytewise,
+with the same retention as the other stores (subject to SHA-256 collision risk).
+Queue names and owner tokens are limited to 255 bytes. Use strict SQL mode to
+reject oversized values. MySQL table names are plain lowercase identifiers of
+at most 64 characters. Run `schema()` through migrations before dispatching;
+MySQL DDL implicitly commits.
+
+When publishing a business change and a task atomically, share the same physical
+connection and transaction. Otherwise use a transactional application outbox:
+a dispatch after a business commit can be lost if the process crashes between
+the two writes.
 
 ## Setup
 
@@ -239,17 +275,25 @@ kept until you retry or delete them.
 ## Tests
 
 ```bash
-docker compose up -d   # PostgreSQL on port 55432
+docker compose up -d   # PostgreSQL on port 55432, MySQL on port 53306
 composer test
 ```
 
-Every suite runs against both stores. The SQLite tests use temporary files
+Every suite runs against all three stores. The SQLite tests use temporary files
 and always run; set `KALY_TASKS_PGSQL_DSN` to another database, or empty to
-skip the PostgreSQL tests:
+skip the PostgreSQL tests. `KALY_TASKS_MYSQL_DSN` defaults to
+`mysql:host=127.0.0.1;port=53306;dbname=kaly_tasks;user=kaly;password=kaly;charset=utf8mb4`;
+set it empty to skip MySQL. The MySQL test engine reads the user/password fields
+from this test DSN and passes them to PDO separately. MySQL tests include the
+store contract through PDO, Doctrine and Cycle, worker concurrency, signals,
+transaction rollback, locked rows and stale owners.
+
+To run only the local SQLite tests:
 
 ```bash
-KALY_TASKS_PGSQL_DSN="" composer test
+KALY_TASKS_PGSQL_DSN="" KALY_TASKS_MYSQL_DSN="" composer test
 ```
 
-The default PostgreSQL DSN expects Docker on port 55432. If it is configured
-but unreachable, the tests fail rather than silently skipping PostgreSQL.
+The default DSNs expect Docker on ports 55432 (PostgreSQL) and 53306 (MySQL).
+If a database is configured but unreachable, the tests fail rather than silently
+skipping it.

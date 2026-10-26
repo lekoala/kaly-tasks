@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * A test against a real database, given by the engine trait of the concrete
- * class: OnPostgres or OnSqlite.
+ * class: OnPostgres, OnMysql or OnSqlite.
  */
 abstract class StoreTestCase extends TestCase
 {

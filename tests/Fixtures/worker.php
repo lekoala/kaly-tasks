@@ -8,6 +8,7 @@ use Kaly\Di\Container;
 use Kaly\Di\Injector;
 use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\TaskRegistry;
+use Kaly\Tasks\Tests\Engine\MysqlEngine;
 use Kaly\Tasks\Tests\Engine\PostgresEngine;
 use Kaly\Tasks\Tests\Engine\SqliteEngine;
 use Kaly\Tasks\Tests\Fixtures\LogTask;
@@ -23,7 +24,11 @@ if (count($arguments) !== 5) {
     exit(1);
 }
 [, $engine, $dsn, $table, $barrier] = $arguments;
-$engine = $engine === 'sqlite' ? new SqliteEngine($dsn) : new PostgresEngine($dsn);
+$engine = match ($engine) {
+    'sqlite' => new SqliteEngine($dsn),
+    'mysql' => new MysqlEngine($dsn),
+    default => new PostgresEngine($dsn),
+};
 $registry = (new TaskRegistry())->register('test.log', LogTask::class);
 $store = $engine->store(new PdoConnection($engine->connect()), $table);
 $worker = new Worker($store, $registry, new Injector(new Container([PDO::class => $engine->connect()])));

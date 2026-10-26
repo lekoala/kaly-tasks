@@ -6,6 +6,7 @@ namespace Kaly\Tasks\Tests;
 
 use Cycle\Database\Database;
 use Cycle\Database\Driver\DriverInterface;
+use Cycle\Database\Injection\Parameter;
 use Cycle\Database\StatementInterface;
 use Kaly\Tasks\Connection\CycleConnection;
 use PHPUnit\Framework\TestCase;
@@ -17,7 +18,11 @@ class CycleConnectionTest extends TestCase
         $statement = $this->createStub(StatementInterface::class);
         $statement->method('fetchAll')->willReturn([['id' => 1]]);
         $write = $this->createMock(DriverInterface::class);
-        $write->expects($this->once())->method('query')->with('UPDATE t SET a = ? RETURNING id', [1])->willReturn($statement);
+        $write
+            ->expects($this->once())
+            ->method('query')
+            ->with('UPDATE t SET a = ? RETURNING id', [new Parameter(1)])
+            ->willReturn($statement);
         // A read-only replica would reject the reservation
         $read = $this->createMock(DriverInterface::class);
         $read->expects($this->never())->method('query');

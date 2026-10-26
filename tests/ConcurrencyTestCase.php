@@ -45,20 +45,27 @@ abstract class ConcurrencyTestCase extends StoreTestCase
         $this->pdo()->exec('DROP TABLE kaly_tasks_log');
     }
 
+    public function testConcurrentDispatchesDeduplicate(): void
+    {
+        $inserted = $this->runWorkers('producer.php');
+        $this->assertSame(10, array_sum($inserted));
+        $this->assertSame(10, $this->countTasks('pending'));
+    }
+
     /**
      * Starts the workers together at a barrier: a fast first worker cannot
      * drain the table before the others have started.
      *
      * @return list<int> The tasks processed by each worker
      */
-    private function runWorkers(): array
+    protected function runWorkers(string $script = 'worker.php'): array
     {
         $barrier = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'kaly-tasks-barrier-' . bin2hex(random_bytes(8));
         mkdir($barrier);
         try {
             $processes = [];
             for ($i = 0; $i < self::WORKERS; $i++) {
-                $processes[] = $this->startProcess('worker.php', [$barrier]);
+                $processes[] = $this->startProcess($script, [$barrier]);
             }
             $deadline = microtime(true) + 30;
             while (count(glob($barrier . '/ready-*') ?: []) < self::WORKERS) {

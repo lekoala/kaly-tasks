@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Connection;
 
+use Closure;
 use Doctrine\DBAL\Connection as DbalConnection;
 use Doctrine\DBAL\Connections\PrimaryReadReplicaConnection;
 use Doctrine\DBAL\Driver\SQLite3\Driver as Sqlite3Driver;
 use Doctrine\DBAL\ParameterType;
 use InvalidArgumentException;
+use LogicException;
 use SQLite3;
+use Throwable;
 
 /**
  * A Doctrine DBAL connection. Statements run inside its current transaction,
@@ -22,7 +25,7 @@ use SQLite3;
  * second task. See PHP bugs #64531 (fetchArray() runs the query again) and
  * #81376 (UPDATE … RETURNING).
  */
-final readonly class DoctrineConnection implements Connection
+final readonly class DoctrineConnection implements TransactionalConnection
 {
     private const SQLITE3_REFUSED = 'The Doctrine sqlite3 driver runs a statement again when its rows are fetched, use pdo_sqlite';
 
@@ -31,6 +34,38 @@ final readonly class DoctrineConnection implements Connection
     ) {
         if ($connection->getDriver() instanceof Sqlite3Driver) {
             throw new InvalidArgumentException(self::SQLITE3_REFUSED);
+        }
+    }
+
+    /**
+     * @template T
+     * @param Closure(Connection): T $callback
+     * @return T
+     */
+    public function transaction(Closure $callback): mixed
+    {
+        if ($this->connection instanceof PrimaryReadReplicaConnection) {
+            $this->connection->ensureConnectedToPrimary();
+        }
+        $this->assertNotSqlite3();
+        if ($this->connection->isTransactionActive()) {
+            throw new LogicException('Reservation requires a connection without an active transaction');
+        }
+        $this->connection->beginTransaction();
+        try {
+            $result = $callback($this);
+            $this->connection->commit();
+            return $result;
+        } catch (Throwable $error) {
+            try {
+                if ($this->connection->isTransactionActive()) {
+                    $this->connection->rollBack();
+                }
+            } catch (Throwable) {
+                // A lost connection must not hide the original failure
+                throw $error;
+            }
+            throw $error;
         }
     }
 

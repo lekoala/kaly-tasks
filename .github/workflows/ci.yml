@@ -31,6 +31,21 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: kaly_tasks
+          MYSQL_USER: kaly
+          MYSQL_PASSWORD: kaly
+          MYSQL_ROOT_PASSWORD: kaly
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pkaly"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,7 +55,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           ini-values: zend.assertions=1
-          extensions: pdo_pgsql, pdo_sqlite, pcntl
+          extensions: pdo_pgsql, pdo_sqlite, pdo_mysql, pcntl
           coverage: none
           tools: composer:v2
 

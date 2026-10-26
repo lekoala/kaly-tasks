@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Add `MysqlTaskStore` for MySQL 8.0.16+ and Aurora MySQL v3 writer endpoints,
+  with short `FOR UPDATE SKIP LOCKED` reservations, UTC database timestamps,
+  verbatim payloads and SHA-256 deduplication keys. Queue names and owners are
+  limited to 255 bytes. Add MySQL integration, concurrency and transaction
+  tests, and a MySQL service to Compose and CI.
+- Add `TransactionalConnection`, implemented by PDO, Doctrine and Cycle.
+  Its callback runs on a pinned primary connection and commits before returning;
+  existing transactions are refused for reservation. Dispatch still joins the
+  application's transaction. Existing `Connection` implementations remain valid
+  for PostgreSQL and SQLite; MySQL requires `TransactionalConnection`.
+- Cycle parameters preserve integer and null types, including MySQL `LIMIT`
+  parameters.
+
 ## 0.2.0 - 2026-10-23
 
 - **Breaking:** both stores reject NUL bytes in task names, queue names,

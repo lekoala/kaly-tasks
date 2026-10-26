@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Kaly\Tasks\Connection;
 
 use Closure;
+use LogicException;
 use PDO;
 use PDOStatement;
 use RuntimeException;
+use Throwable;
 
 /**
  * A PDO handle, or a closure resolving it on each statement when the handle
@@ -16,7 +18,7 @@ use RuntimeException;
  * To join an application transaction, the closure must return the handle that
  * runs it: a different handle writes outside the transaction.
  */
-final readonly class PdoConnection implements Connection
+final readonly class PdoConnection implements TransactionalConnection
 {
     /**
      * @param PDO|Closure():PDO $pdo
@@ -24,6 +26,37 @@ final readonly class PdoConnection implements Connection
     public function __construct(
         private PDO|Closure $pdo,
     ) {}
+
+    /**
+     * @template T
+     * @param Closure(Connection): T $callback
+     * @return T
+     */
+    public function transaction(Closure $callback): mixed
+    {
+        $pdo = $this->pdo instanceof PDO ? $this->pdo : ($this->pdo)();
+        if ($pdo->inTransaction()) {
+            throw new LogicException('Reservation requires a connection without an active transaction');
+        }
+        if (!$pdo->beginTransaction()) {
+            throw new RuntimeException('Could not begin reservation transaction');
+        }
+        try {
+            $result = $callback(new self($pdo));
+            if (!$pdo->commit()) {
+                throw new RuntimeException('Could not commit reservation transaction');
+            }
+            return $result;
+        } catch (Throwable $error) {
+            try {
+                $pdo->rollBack();
+            } catch (Throwable) {
+                // A lost connection must not hide the original failure
+                throw $error;
+            }
+            throw $error;
+        }
+    }
 
     public function execute(string $sql, array $params = []): int
     {
