@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-10-26
 
 - **Breaking:** require Kaly `^0.6` for the `ScheduledTaskDispatcher` capability.
   `DatabaseTaskDispatcher` implements it and remains usable as `TaskDispatcher`.
