@@ -12,6 +12,7 @@ use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\EncodedTask;
 use PDOException;
 use Throwable;
+use UnexpectedValueException;
 
 /**
  * MySQL 8 task store, also suitable for Aurora MySQL v3 on its writer endpoint.
@@ -192,6 +193,28 @@ final readonly class MysqlTaskStore implements TaskStore
     public function deleteFailed(int $id): bool
     {
         return $this->connection->execute("DELETE FROM `{$this->table}` WHERE id = ? AND status = 'failed'", [$id]) === 1;
+    }
+
+    public function stats(?string $queue = null): TaskStats
+    {
+        if ($queue === '') {
+            throw new InvalidArgumentException('Stats queue name cannot be empty');
+        }
+        if ($queue !== null) {
+            StoreValues::assertNoNul($queue, 'The queue name');
+        }
+        $filter = $queue === null ? '' : ' AND queue = ?';
+        $row = $this->connection->fetchAll(
+            "SELECT
+            (SELECT COUNT(*) FROM `{$this->table}` WHERE status = 'pending' AND available_at <= UTC_TIMESTAMP(6){$filter}) AS ready,
+            (SELECT COUNT(*) FROM `{$this->table}` WHERE status = 'pending' AND available_at > UTC_TIMESTAMP(6){$filter}) AS scheduled,
+            (SELECT COUNT(*) FROM `{$this->table}` WHERE status = 'running'{$filter}) AS running,
+            (SELECT COUNT(*) FROM `{$this->table}` WHERE status = 'failed'{$filter}) AS failed,
+            (SELECT FLOOR(TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', MIN(available_at)) / 1000000) FROM `{$this->table}` WHERE status = 'pending'{$filter}) AS earliest_pending_at",
+            $queue === null ? [] : array_fill(0, 5, $queue),
+        )[0] ?? throw new UnexpectedValueException('Stats query returned no row');
+
+        return StoreValues::stats($row);
     }
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int

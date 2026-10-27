@@ -53,7 +53,7 @@ final class Worker
         $this->stopping = false;
         $signals = $this->listenToSignals($options);
         if (!$signals && $options->timeout > 0) {
-            $this->logger->warning('Task timeout of {timeout}s is not enforced without ext-pcntl: the lease must cover the longest run', [
+            $this->log('warning', 'Task timeout of {timeout}s is not enforced without ext-pcntl: the lease must cover the longest run', [
                 'timeout' => $options->timeout,
             ]);
         }
@@ -66,7 +66,7 @@ final class Worker
                 if ($recovered === null || (microtime(true) - $recovered) >= $options->recoverInterval) {
                     $count = $this->store->recover();
                     if ($count > 0) {
-                        $this->logger->warning('Recovered {count} tasks with an expired lease', ['count' => $count]);
+                        $this->log('warning', 'Recovered {count} tasks with an expired lease', ['count' => $count]);
                     }
                     $recovered = microtime(true);
                 }
@@ -117,7 +117,7 @@ final class Worker
         // Checked before decoding: a constructor that kills the worker must not run forever
         if ($type !== null && $reserved->attempts > $retry->maxAttempts) {
             // Previous attempts never settled: their worker died or exceeded its lease
-            $this->logger->error('Task {task} #{id} exceeded {max} attempts', $context + ['max' => $retry->maxAttempts]);
+            $this->log('error', 'Task {task} #{id} exceeded {max} attempts', $context + ['max' => $retry->maxAttempts]);
             $this->settled($this->store->fail($reserved, "Exceeded {$retry->maxAttempts} attempts"), $context);
             return;
         }
@@ -131,7 +131,7 @@ final class Worker
             try {
                 $task = $this->registry->decode($reserved->name, $reserved->payload);
             } catch (Throwable $e) {
-                $this->logger->error('Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);
+                $this->log('error', 'Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);
                 $this->settled($this->store->fail($reserved, $e->getMessage()), $context);
                 return;
             }
@@ -142,11 +142,12 @@ final class Worker
             } catch (Throwable $e) {
                 $error = $e::class . ': ' . $e->getMessage();
                 if ($reserved->attempts >= $retry->maxAttempts) {
-                    $this->logger->error('Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
+                    $this->log('error', 'Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
                     $this->settled($this->store->fail($reserved, $error), $context);
                 } else {
                     $delay = $retry->delayAfter($reserved->attempts);
-                    $this->logger->warning(
+                    $this->log(
+                        'warning',
                         'Task {task} #{id} will retry in {delay}s: {error}',
                         $context + ['delay' => $delay, 'error' => $error, 'exception' => $e],
                     );
@@ -173,7 +174,20 @@ final class Worker
     private function settled(bool $settled, array $context): void
     {
         if (!$settled) {
-            $this->logger->warning('Task {task} #{id} was settled after losing its lease and may run twice', $context);
+            $this->log('warning', 'Task {task} #{id} was settled after losing its lease and may run twice', $context);
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $context
+     */
+    private function log(string $level, string $message, array $context = []): void
+    {
+        try {
+            $this->logger->log($level, $message, $context);
+        } catch (Throwable) {
+            // Observability must never change a task outcome
+            return;
         }
     }
 
@@ -197,7 +211,7 @@ final class Worker
         if ($options->timeout > 0) {
             $handlers[SIGALRM] = function () use ($options): void {
                 $task = $this->current;
-                $this->logger->critical('Task {task} #{id} exceeded {timeout}s, the worker exits', [
+                $this->log('critical', 'Task {task} #{id} exceeded {timeout}s, the worker exits', [
                     'id' => $task?->id,
                     'task' => $task?->name,
                     'timeout' => $options->timeout,

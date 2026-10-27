@@ -1,6 +1,6 @@
 <?php
 
-// A worker process for the signal tests: php signal-worker.php <engine> <dsn> <table> <timeout>
+// A worker process for the signal tests: php signal-worker.php <engine> <dsn> <table> <timeout> [throwing-logger]
 
 declare(strict_types=1);
 
@@ -12,15 +12,17 @@ use Kaly\Tasks\Tests\Engine\MysqlEngine;
 use Kaly\Tasks\Tests\Engine\PostgresEngine;
 use Kaly\Tasks\Tests\Engine\SqliteEngine;
 use Kaly\Tasks\Tests\Fixtures\SleepTask;
+use Kaly\Tasks\Tests\Fixtures\ThrowingLogger;
 use Kaly\Tasks\Worker;
 use Kaly\Tasks\WorkerOptions;
+use Psr\Log\NullLogger;
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 
 // $argv may not be defined: read the same list from $_SERVER and validate it
 $arguments = is_array($_SERVER['argv'] ?? null) ? array_values(array_filter($_SERVER['argv'], is_string(...))) : [];
-if (count($arguments) !== 5) {
-    fwrite(STDERR, 'Usage: php signal-worker.php <engine> <dsn> <table> <timeout>' . PHP_EOL);
+if (count($arguments) !== 5 && count($arguments) !== 6) {
+    fwrite(STDERR, 'Usage: php signal-worker.php <engine> <dsn> <table> <timeout> [throwing-logger]' . PHP_EOL);
     exit(1);
 }
 [, $engine, $dsn, $table, $timeout] = $arguments;
@@ -31,6 +33,11 @@ $engine = match ($engine) {
 };
 $registry = (new TaskRegistry())->register('test.sleep', SleepTask::class);
 $store = $engine->store(new PdoConnection($engine->connect()), $table);
-$worker = new Worker($store, $registry, new Injector(new Container()));
+$worker = new Worker(
+    $store,
+    $registry,
+    new Injector(new Container()),
+    ($arguments[5] ?? '0') === '1' ? new ThrowingLogger() : new NullLogger(),
+);
 
 echo $worker->run(new WorkerOptions(lease: 60, timeout: (int) $timeout, sleepMs: 100, stopWhenEmpty: true));

@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\EncodedTask;
+use UnexpectedValueException;
 
 /**
  * SQLite task store, for an application and its workers on one host.
@@ -177,6 +178,28 @@ final readonly class SqliteTaskStore implements TaskStore
     public function deleteFailed(int $id): bool
     {
         return $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND status = 'failed'", [$id]) === 1;
+    }
+
+    public function stats(?string $queue = null): TaskStats
+    {
+        if ($queue === '') {
+            throw new InvalidArgumentException('Stats queue name cannot be empty');
+        }
+        if ($queue !== null) {
+            StoreValues::assertNoNul($queue, 'The queue name');
+        }
+        $filter = $queue === null ? '' : ' AND queue = ?';
+        $row = $this->connection->fetchAll(
+            "SELECT
+            (SELECT COUNT(*) FROM {$this->table} WHERE status = 'pending' AND available_at <= unixepoch(){$filter}) AS ready,
+            (SELECT COUNT(*) FROM {$this->table} WHERE status = 'pending' AND available_at > unixepoch(){$filter}) AS scheduled,
+            (SELECT COUNT(*) FROM {$this->table} WHERE status = 'running'{$filter}) AS running,
+            (SELECT COUNT(*) FROM {$this->table} WHERE status = 'failed'{$filter}) AS failed,
+            (SELECT MIN(available_at) FROM {$this->table} WHERE status = 'pending'{$filter}) AS earliest_pending_at",
+            $queue === null ? [] : array_fill(0, 5, $queue),
+        )[0] ?? throw new UnexpectedValueException('Stats query returned no row');
+
+        return StoreValues::stats($row);
     }
 
     public function purge(int $olderThanSeconds, ?int $failedOlderThanSeconds = null): int

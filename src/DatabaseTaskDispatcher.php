@@ -18,6 +18,11 @@ use Kaly\Tasks\Store\TaskStore;
  * transaction. A task already stored with the same deduplication key is
  * silently skipped, preserving its original deadline. `notBefore` is a lower
  * bound on execution, normalized by the store.
+ *
+ * A thrown error does not prove the insertion failed: a lost connection or an
+ * ambiguous commit may have stored the task. Retrying with the same deduplication
+ * key prevents duplicate stored tasks while that key is retained; it does not
+ * guarantee exactly-once external effects.
  */
 final readonly class DatabaseTaskDispatcher implements ScheduledTaskDispatcher
 {

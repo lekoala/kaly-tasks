@@ -25,9 +25,9 @@ abstract class SignalTestCase extends StoreTestCase
     /**
      * @return array{resource,array<int,resource>}
      */
-    private function startWorker(int $timeout): array
+    private function startWorker(int $timeout, bool $throwing = false): array
     {
-        return $this->startProcess('signal-worker.php', [(string) $timeout]);
+        return $this->startProcess('signal-worker.php', [(string) $timeout, $throwing ? '1' : '0']);
     }
 
     private function dispatch(int ...$seconds): void
@@ -76,5 +76,18 @@ abstract class SignalTestCase extends StoreTestCase
         $this->assertSame(1, $exitCode, $errors);
         $this->assertLessThan(10, microtime(true) - $started);
         $this->assertSame(1, $this->countTasks('running'), 'Recovered by another worker once the lease expires');
+    }
+
+    public function testTimeoutExitsEvenWhenTheLoggerThrows(): void
+    {
+        $this->dispatch(20);
+        $started = microtime(true);
+        [$process, $pipes] = $this->startWorker(timeout: 1, throwing: true);
+        $errors = (string) stream_get_contents($pipes[2]);
+
+        $this->assertSame(1, proc_close($process), $errors);
+        $this->assertSame('', $errors);
+        $this->assertLessThan(10, microtime(true) - $started);
+        $this->assertSame(1, $this->countTasks('running'));
     }
 }

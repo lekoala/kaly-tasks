@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kaly\Tasks\Store;
 
 use DateTimeImmutable;
+use InvalidArgumentException;
 use Kaly\Tasks\EncodedTask;
 
 /**
@@ -78,6 +79,22 @@ interface TaskStore
      * Deletes a failed task and frees its deduplication key.
      */
     public function deleteFailed(int $id): bool;
+
+    /**
+     * Counts tasks by state, for one queue or the whole table.
+     *
+     * `ready` are pending tasks whose availability is reached, `scheduled` pending
+     * tasks due later (retries included), `running` every reserved task, expired
+     * leases included. `earliestPendingAt` is the oldest availability among pending
+     * tasks, null without one: it is in the past or now when work is already ready.
+     *
+     * One aggregate statement, under the connection's isolation rules; values may
+     * be stale as soon as it returns. Comparisons use the store clock and
+     * `earliestPendingAt` is always UTC, floored to whole seconds.
+     *
+     * @throws InvalidArgumentException On an empty queue name or one containing NUL bytes
+     */
+    public function stats(?string $queue = null): TaskStats;
 
     /**
      * Deletes done tasks finished more than `$olderThanSeconds` ago, and failed

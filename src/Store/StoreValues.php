@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Store;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use UnexpectedValueException;
 
@@ -90,6 +91,21 @@ final class StoreValues
             'created_at' => self::int($row['created_at']),
             'finished_at' => self::int($row['finished_at']),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    public static function stats(array $row): TaskStats
+    {
+        $earliestPendingAt = $row['earliest_pending_at'] ?? null;
+        return new TaskStats(
+            self::int($row['ready']),
+            self::int($row['scheduled']),
+            self::int($row['running']),
+            self::int($row['failed']),
+            $earliestPendingAt === null ? null : new DateTimeImmutable('@' . self::int($earliestPendingAt)),
+        );
     }
 
     /**

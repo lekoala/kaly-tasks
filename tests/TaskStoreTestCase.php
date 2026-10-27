@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\EncodedTask;
 use Kaly\Tasks\Store\ReservedTask;
+use Kaly\Tasks\Store\SqliteTaskStore;
 use Kaly\Tasks\TaskRegistry;
 use Kaly\Tasks\Tests\Fixtures\Priority;
 use Kaly\Tasks\Tests\Fixtures\TypedTask;
@@ -21,6 +22,125 @@ abstract class TaskStoreTestCase extends StoreTestCase
     private function reserve(string $queue = 'default', string $owner = 'owner-a'): ?ReservedTask
     {
         return $this->store()->reserve([$queue], $owner, 60);
+    }
+
+    public function testStatsOnAnEmptyTable(): void
+    {
+        $stats = $this->store()->stats();
+        $this->assertSame([0, 0, 0, 0], [$stats->ready, $stats->scheduled, $stats->running, $stats->failed]);
+        $this->assertNull($stats->earliestPendingAt);
+    }
+
+    public function testStatsSeparatesReadyScheduledRunningAndFailed(): void
+    {
+        foreach (['running', 'failed', 'done'] as $state) {
+            $this->store()->push(new EncodedTask($state, 'default', '{}'));
+            $task = $this->reserve();
+            $this->assertNotNull($task);
+            if ($state === 'failed') {
+                $this->assertTrue($this->store()->fail($task, 'Permanent failure'));
+            } elseif ($state === 'done') {
+                $this->assertTrue($this->store()->complete($task));
+            }
+        }
+        $this->store()->push(new EncodedTask('ready', 'default', '{}'));
+        $this->store()->push(new EncodedTask('scheduled', 'default', '{}'), new DateTimeImmutable('+1 hour'));
+        $stats = $this->store()->stats();
+        $this->assertSame([1, 1, 1, 1], [$stats->ready, $stats->scheduled, $stats->running, $stats->failed]);
+    }
+
+    public function testStatsCountsRunningTasksWithAnExpiredLease(): void
+    {
+        $this->store()->push(new EncodedTask('running', 'default', '{}'));
+        $this->assertNotNull($this->reserve());
+        $this->age(61);
+        $stats = $this->store()->stats();
+        $this->assertSame(1, $stats->running);
+        $this->assertSame(0, $stats->ready);
+        $this->assertNull($stats->earliestPendingAt);
+    }
+
+    public function testStatsCountsRetriesAsScheduled(): void
+    {
+        $this->store()->push(new EncodedTask('retry', 'default', '{}'));
+        $task = $this->reserve();
+        $this->assertNotNull($task);
+        $this->assertTrue($this->store()->release($task, 30, 'Retry later'));
+        $stats = $this->store()->stats();
+        $this->assertSame(0, $stats->ready);
+        $this->assertSame(1, $stats->scheduled);
+    }
+
+    public function testStatsReportsTheEarliestPendingAvailability(): void
+    {
+        $this->store()->push(new EncodedTask('later', 'default', '{}'), new DateTimeImmutable('+2 hours'));
+        $this->store()->push(new EncodedTask('first', 'default', '{}'), new DateTimeImmutable('+1 hour'));
+        $earliest = $this->store()->stats()->earliestPendingAt;
+        $this->assertNotNull($earliest);
+        $this->assertEqualsWithDelta(time() + 3600, $earliest->getTimestamp(), 5);
+        $this->assertSame('+00:00', $earliest->getTimezone()->getName());
+        $this->assertSame('000000', $earliest->format('u'));
+
+        $past = new DateTimeImmutable('2000-01-01T00:00:00Z');
+        $this->store()->push(new EncodedTask('past', 'default', '{}'), $past);
+        $stats = $this->store()->stats();
+        $this->assertSame($past->getTimestamp(), $stats->earliestPendingAt?->getTimestamp());
+        $this->assertSame(1, $stats->ready);
+    }
+
+    public function testStatsFiltersByQueue(): void
+    {
+        $this->store()->push(new EncodedTask('running', 'mail', '{}'));
+        $this->assertNotNull($this->reserve('mail'));
+        $this->store()->push(new EncodedTask('failed', 'default', '{}'));
+        $failed = $this->reserve();
+        $this->assertNotNull($failed);
+        $this->assertTrue($this->store()->fail($failed, 'Permanent failure'));
+        $past = new DateTimeImmutable('2000-01-01T00:00:00Z');
+        $future = new DateTimeImmutable('+1 hour');
+        $this->store()->push(new EncodedTask('mail', 'mail', '{}'), $past);
+        $this->store()->push(new EncodedTask('default', 'default', '{}'), $future);
+        $mail = $this->store()->stats('mail');
+        $default = $this->store()->stats('default');
+        $all = $this->store()->stats();
+        $this->assertSame([1, 0, 1, 0], [$mail->ready, $mail->scheduled, $mail->running, $mail->failed]);
+        $this->assertSame([0, 1, 0, 1], [$default->ready, $default->scheduled, $default->running, $default->failed]);
+        foreach (['ready', 'scheduled', 'running', 'failed'] as $state) {
+            $this->assertSame($mail->$state + $default->$state, $all->$state);
+        }
+        $this->assertSame($past->getTimestamp(), $mail->earliestPendingAt?->getTimestamp());
+        $this->assertSame($past->getTimestamp(), $all->earliestPendingAt?->getTimestamp());
+        $this->assertEqualsWithDelta($future->getTimestamp(), $default->earliestPendingAt?->getTimestamp(), 1);
+        $unknown = $this->store()->stats('unknown');
+        $this->assertSame([0, 0, 0, 0], [$unknown->ready, $unknown->scheduled, $unknown->running, $unknown->failed]);
+        $this->assertNull($unknown->earliestPendingAt);
+    }
+
+    public function testStatsRejectsAnEmptyOrNulQueueName(): void
+    {
+        foreach (['', "default\0other"] as $queue) {
+            try {
+                $this->store()->stats($queue);
+                $this->fail('Invalid queue must be rejected');
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString($queue === '' ? 'empty' : 'NUL', $e->getMessage());
+            }
+        }
+    }
+
+    public function testStatsReportsDatesBeforeTheEpoch(): void
+    {
+        $this->store()->push(new EncodedTask('past', 'default', '{}'), new DateTimeImmutable('1960-01-01T00:00:00Z'));
+        $this->assertSame(-315_619_200, $this->store()->stats()->earliestPendingAt?->getTimestamp());
+    }
+
+    public function testStatsFloorsFractionalDatesBeforeTheEpoch(): void
+    {
+        if ($this->store() instanceof SqliteTaskStore) {
+            $this->markTestSkipped('SQLite rounds stored availability up to whole seconds, including dates before 1970');
+        }
+        $this->store()->push(new EncodedTask('past', 'default', '{}'), new DateTimeImmutable('1960-01-01T00:00:00.5Z'));
+        $this->assertSame(-315_619_200, $this->store()->stats()->earliestPendingAt?->getTimestamp());
     }
 
     public function testFutureTasksBecomeAvailableOnlyAfterTheirDeadline(): void

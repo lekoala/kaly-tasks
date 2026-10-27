@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- A logger that throws no longer changes a task outcome, stops the worker loop
+  or prevents the hard timeout from ending the process. Store failures still
+  propagate.
+- **Breaking:** `TaskStore` requires `stats(?string $queue = null): TaskStats`;
+  custom stores must implement it.
+- Add `Kaly\Tasks\Store\TaskStats` and queue statistics on all three stores:
+  ready, scheduled (retries included), running (expired leases included), failed
+  and the oldest pending availability. One aggregate statement per call using
+  the store clock, with dates floored to whole UTC seconds. No schema change.
+- Document dispatch failure outcomes, lease expiry versus loss of ownership,
+  and a versioned-reminder recipe for moving scheduled work without a cancel
+  or reschedule API.
+
 ## 0.3.0 - 2026-10-26
 
 - **Breaking:** require Kaly `^0.6` for the `ScheduledTaskDispatcher` capability.

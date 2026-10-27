@@ -66,14 +66,78 @@ work depend on this interface; services that only submit tasks can keep
 `Kaly\Task\TaskDispatcher`. The direct dispatcher offers the minimal contract.
 Kaly's recording dispatcher supports scheduling with an injectable test clock.
 
+### Moving a scheduled reminder
+
+Use a business version to supersede reminders without changing stored tasks:
+
+```php
+final readonly class SendAppointmentReminder
+{
+    public function __construct(
+        public string $appointmentId,
+        public int $version,
+        public string $deduplicationKey,
+    ) {}
+
+    public function __invoke(AppointmentRepository $appointments, ReminderSender $sender): void
+    {
+        $appointment = $appointments->find($this->appointmentId);
+        if ($appointment === null || $appointment->cancelled) {
+            return;
+        }
+        if ($appointment->version !== $this->version) {
+            return; // superseded by a later change
+        }
+        $sender->send($appointment);
+    }
+}
+
+$registry->register(
+    'appointments.remind',
+    SendAppointmentReminder::class,
+    deduplicateBy: 'deduplicationKey',
+);
+
+// On booking or rescheduling, ideally in the same application transaction:
+$tasks->dispatch(
+    new SendAppointmentReminder(
+        $appointment->id,
+        $appointment->version,
+        "{$appointment->id}:{$appointment->version}",
+    ),
+    notBefore: $appointment->startsAt->modify('-1 day'),
+);
+```
+
+Increment the business version for every relevant change: date, location,
+recipient and cancellation. The handler explicitly checks deletion and
+cancellation too: matching a version does not establish that an appointment is
+still active. An obsolete reminder still runs at its original deadline, consumes
+one execution slot and returns without sending.
+
+The version check is not atomic with sending: if the appointment changes during
+an external call, an outdated reminder may still be sent. Decide whether that
+race is acceptable for notifications; business writes need suitable concurrency
+control. Use a stable provider idempotency key for the reminder operation to
+prevent repeated external effects on retries; it does not make the version check
+atomic with sending.
+
+Deduplicating by `appointmentId` alone cannot move a reminder because it preserves
+the existing deadline. Versioned keys provide a recipe without a cancellation or
+rescheduling API.
+
 ## Guarantees
 
 - **At least once.** A task runs until it succeeds, fails for good, or exceeds
   its attempts. After a crash, a task may run again: tasks must be idempotent.
 - **Leases with owner tokens.** A reserved task belongs to one worker for the
-  lease duration. Once the lease expires another worker may take it, and the
-  late worker can no longer settle it. A lease does not stop a live worker, so
-  two runs may exceptionally overlap.
+  lease duration. Settlement requires ownership, not a live lease: a worker
+  finishing after its deadline can still record its result until `recover()`
+  invalidates the reservation. Recovery clears the owner, and a new reservation
+  gets a new token, so the late worker's settlement then changes nothing.
+  A lease does not stop a live worker, so two runs may exceptionally overlap.
+  Keeping `timeout < lease` helps prevent overlap; it is not a condition for
+  accepting settlement.
 - **Bounded retries.** Exponential backoff per task type, then `failed`. A
   task abandoned too often (worker crashes, timeouts) fails without running.
 - **Whitelisted JSON payloads.** Only registered types are stored and rebuilt,
@@ -87,6 +151,25 @@ Deduplicating a task is not deduplicating its effects. If a worker calls an
 external API and crashes before settling the task, the call is repeated.
 Carry a stable operation key in the task and use it for the provider
 idempotency, or reconcile the external state before acting.
+
+### When a dispatch fails
+
+| Situation | What is known | Response |
+|---|---|---|
+| Validation rejection before SQL: unregistered task, unencodable payload, NUL in an identifier or an out-of-range value | No insertion was attempted | Correct the input and dispatch again |
+| A definite SQL rejection, such as an invalid type or a `NOT NULL` constraint violation | That insertion was rejected | Correct the cause and dispatch again; respect the transaction's error state |
+| Lost connection, ambiguous `COMMIT` or a failure after sending the statement | The task may have been stored | Do not infer that the task is absent; retry with the same deduplication key while it is retained, or reconcile the stored state |
+
+Retrying with the same deduplication key prevents duplicate stored tasks while
+that key is retained. It does not guarantee exactly-once external effects.
+`purge()` and `deleteFailed()` free retained keys. An application transaction
+must commit before the task becomes durable; commit failures may themselves
+have an uncertain outcome.
+
+PDO, Doctrine and Cycle cannot reliably classify every failure, so there is no
+`OutcomeUnknownException` hierarchy. An arbitrary exception is not proof that
+nothing was written. See [Where the queue lives](#where-the-queue-lives): with a
+dedicated queue database, business commit and dispatch are separate writes.
 
 ## Where the queue lives
 
@@ -313,6 +396,34 @@ or another failure replaces it.
 Done and failed tasks are kept until purged: their deduplication keys stay
 active for the retention period. Without the second argument, failed tasks are
 kept until you retry or delete them.
+
+```php
+$stats = $store->stats();           // whole table
+$mailStats = $store->stats('mail'); // one queue
+
+$stats->ready;              // pending, due now
+$stats->scheduled;          // pending, due later, retries included
+$stats->running;            // reserved, expired leases included
+$stats->failed;             // failed for good
+$stats->earliestPendingAt;  // ?DateTimeImmutable, UTC: oldest pending availability
+```
+
+Each call uses one aggregate `SELECT` on the writer. Its five values share the
+statement's view under the connection's isolation rules; they may be stale as
+soon as it returns, and separate calls do not share a snapshot. Availability
+comparisons use the database clock. `earliestPendingAt` is floored to whole UTC
+seconds, or `null` without pending tasks. When work is ready, this date is in the
+past or now and shows how long the oldest pending work has been waiting.
+`stats(null)` covers the whole table; an empty queue name or one containing NUL
+bytes is rejected.
+
+Statistics use the existing status indexes without a schema change. The global
+minimum may scan pending entries across queues; the cost grows with pending
+work, even though completed tasks can be excluded. A queue filter allows an
+indexed lookup for its oldest pending availability. Measure against your active
+queue size before polling frequently. These statistics support application
+dashboards and supervision; they do not provide history, durations, per-type
+metrics or a console command.
 
 ## Tests
 
