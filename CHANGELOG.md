@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-13
 
 - Add `WorkerOptions::$prioritizeQueues`. When enabled, the worker reserves
   from each queue in the given order and takes the first available task, so
