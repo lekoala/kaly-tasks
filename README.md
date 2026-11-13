@@ -263,7 +263,8 @@ on the failed reservation.
 MySQL polls queues individually through the `pending` index to avoid a filesort
 locking every ready task across several queues. Queue order is shuffled for each
 reservation; ordering by availability and ID is preserved within each queue.
-There is no global FIFO guarantee across queues.
+There is no global FIFO guarantee across queues. Use `prioritizeQueues` on the
+worker for a strict queue order.
 
 Times are UTC `DATETIME(6)` values computed by the database, independently of
 the session time zone. Payloads use `LONGTEXT` to preserve their exact JSON text.
@@ -370,6 +371,31 @@ The worker is crash-only and recycles itself:
 
 Without ext-pcntl (Windows), there is no hard timeout: the lease must cover the
 longest run.
+
+### Queue priority
+
+By default the order of `queues` carries no meaning: each store keeps its own
+selection policy (oldest available task across queues on PostgreSQL and
+SQLite, queues in shuffled order on MySQL). This is not a fairness guarantee.
+
+With `prioritizeQueues`, the order becomes a strict priority: the worker asks
+each queue in turn and takes the first reservable task.
+
+```php
+$worker->run(new WorkerOptions(
+    queues: ['delivery', 'async'],
+    prioritizeQueues: true,
+));
+```
+
+- A busy earlier queue can starve later ones.
+- Each poll costs one reservation call per queue until a task is found, so an
+  idle worker makes one call per queue per `sleepMs`.
+- Priority applies when a task is reserved, not to latency: a worker busy with
+  a long `async` task finishes it before taking urgent work. For a latency
+  target, run a dedicated worker on the urgent queue.
+- `stopWhenEmpty` stops once no queue has a reservable task, even if some hold
+  tasks scheduled for later.
 
 The worker opens no container scope per task. Shared services must be
 re-entrant, and stateful resources (EntityManager, unit of work) are opened by

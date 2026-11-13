@@ -123,4 +123,56 @@ final class WorkerTest extends TestCase
 
         $this->assertSame(0, $worker->run(new WorkerOptions(sleepMs: 0, stopWhenEmpty: true)));
     }
+
+    public function testUnprioritizedQueuesAreReservedTogether(): void
+    {
+        $store = $this->createMock(TaskStore::class);
+        $store->method('recover')->willReturn(0);
+        $store->expects($this->once())->method('reserve')->with(['high', 'low'])->willReturn(null);
+        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()));
+
+        $this->assertSame(0, $worker->run(new WorkerOptions(queues: ['high', 'low'], timeout: 0, sleepMs: 0, stopWhenEmpty: true)));
+    }
+
+    public function testPrioritizedQueuesAreReservedOneByOneWithOneOwner(): void
+    {
+        $calls = [];
+        $store = $this->createMock(TaskStore::class);
+        $store->method('recover')->willReturn(0);
+        $store
+            ->expects($this->exactly(3))
+            ->method('reserve')
+            ->willReturnCallback(static function (array $queues, string $owner) use (&$calls): ?ReservedTask {
+                $calls[] = [$queues, $owner];
+                return null;
+            });
+        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()));
+
+        $this->assertSame(
+            0,
+            $worker->run(new WorkerOptions(
+                queues: ['high', 'mid', 'low'],
+                timeout: 0,
+                sleepMs: 0,
+                stopWhenEmpty: true,
+                prioritizeQueues: true,
+            )),
+        );
+        $this->assertSame([['high'], ['mid'], ['low']], array_column($calls, 0));
+        $this->assertCount(1, array_unique(array_column($calls, 1)));
+    }
+
+    public function testPrioritizedQueuesStopAtTheFirstReservation(): void
+    {
+        $reserved = new ReservedTask(1, 'test.record', '{"entry":"ok"}', 1, 'owner');
+        $store = $this->createMock(TaskStore::class);
+        $store->method('recover')->willReturn(0);
+        $store->expects($this->once())->method('reserve')->with(['high'])->willReturn($reserved);
+        $store->expects($this->once())->method('complete')->with($reserved)->willReturn(true);
+        $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
+        $container = new Container(Definitions::create()->set(Journal::class, new Journal()));
+        $worker = new Worker($store, $registry, new Injector($container));
+
+        $this->assertSame(1, $worker->run(new WorkerOptions(queues: ['high', 'low'], timeout: 0, maxTasks: 1, prioritizeQueues: true)));
+    }
 }

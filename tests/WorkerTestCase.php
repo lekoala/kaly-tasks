@@ -85,6 +85,18 @@ final class ConstructorCountingTask
     public function __invoke(): void {}
 }
 
+final readonly class UrgentRecordTask
+{
+    public function __construct(
+        public string $entry,
+    ) {}
+
+    public function __invoke(Journal $journal): void
+    {
+        $journal->record($this->entry);
+    }
+}
+
 abstract class WorkerTestCase extends StoreTestCase
 {
     private Journal $journal;
@@ -114,7 +126,8 @@ abstract class WorkerTestCase extends StoreTestCase
             ->register('test.steal', StealLeaseTask::class)
             ->register('test.steal-fail', StealThenFailTask::class)
             ->register('test.stop', StopWorkerTask::class)
-            ->register('test.constructor', ConstructorCountingTask::class, retry: new RetryPolicy(maxAttempts: 1, delay: 0));
+            ->register('test.constructor', ConstructorCountingTask::class, retry: new RetryPolicy(maxAttempts: 1, delay: 0))
+            ->register('test.urgent', UrgentRecordTask::class, queue: 'urgent');
         $container = new Container(
             Definitions::create()
                 ->set(Journal::class, $this->journal)
@@ -126,14 +139,23 @@ abstract class WorkerTestCase extends StoreTestCase
         $this->tasks = new DatabaseTaskDispatcher($this->store(), $this->registry);
     }
 
-    private function work(int $maxTasks = 1000, int $memoryLimit = PHP_INT_MAX): int
-    {
+    /**
+     * @param list<string> $queues
+     */
+    private function work(
+        int $maxTasks = 1000,
+        int $memoryLimit = PHP_INT_MAX,
+        array $queues = ['default'],
+        bool $prioritizeQueues = false,
+    ): int {
         return $this->worker->run(new WorkerOptions(
+            queues: $queues,
             timeout: 0,
             maxTasks: $maxTasks,
             memoryLimit: $memoryLimit,
             sleepMs: 0,
             stopWhenEmpty: true,
+            prioritizeQueues: $prioritizeQueues,
         ));
     }
 
@@ -271,5 +293,31 @@ abstract class WorkerTestCase extends StoreTestCase
 
         $this->assertSame(1, $this->work());
         $this->assertSame([1, 1], [$this->countTasks('done'), $this->countTasks('pending')]);
+    }
+
+    public function testPrioritizedQueuesRunInOrder(): void
+    {
+        $this->tasks->dispatch(new RecordTask('low-1'));
+        $this->tasks->dispatch(new RecordTask('low-2'));
+        $this->tasks->dispatch(new UrgentRecordTask('urgent'));
+
+        $this->assertSame(3, $this->work(queues: ['urgent', 'default'], prioritizeQueues: true));
+        $this->assertSame(['urgent', 'low-1', 'low-2'], $this->journal->entries);
+    }
+
+    public function testPrioritizedQueuesSkipQueuesWithoutReservableTasks(): void
+    {
+        $this->tasks->dispatch(new UrgentRecordTask('later'), notBefore: new DateTimeImmutable('+1 hour'));
+        $this->tasks->dispatch(new RecordTask('low'));
+
+        // Stops once no queue has a reservable task, despite the scheduled one
+        $this->assertSame(1, $this->work(queues: ['urgent', 'default'], prioritizeQueues: true));
+        $this->assertSame(['low'], $this->journal->entries);
+        $this->assertSame(1, $this->countTasks('pending'));
+    }
+
+    public function testPrioritizedQueuesStopWhenAllAreEmpty(): void
+    {
+        $this->assertSame(0, $this->work(queues: ['urgent', 'default'], prioritizeQueues: true));
     }
 }

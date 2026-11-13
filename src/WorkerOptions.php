@@ -12,7 +12,8 @@ use InvalidArgumentException;
 final readonly class WorkerOptions
 {
     /**
-     * @param list<string> $queues Queues to poll, in no priority order
+     * @param list<string> $queues Queues to poll. Their order is a priority only
+     *  with `prioritizeQueues`; otherwise each store applies its own selection.
      * @param int $lease How long a reserved task belongs to this worker
      * @param int $timeout Hard limit of one task: the worker process exits when
      *  it is exceeded (requires ext-pcntl, 0 disables). Must be lower than the lease.
@@ -22,6 +23,9 @@ final readonly class WorkerOptions
      * @param int $sleepMs Pause when no task is available, in milliseconds
      * @param int $recoverInterval How often expired leases are recovered
      * @param bool $stopWhenEmpty Exit as soon as no task is available
+     * @param bool $prioritizeQueues Reserve from each queue in order and take the
+     *  first available task: earlier queues have strict priority and can starve
+     *  later ones. Costs one reservation call per queue polled.
      */
     public function __construct(
         public array $queues = ['default'],
@@ -33,6 +37,7 @@ final readonly class WorkerOptions
         public int $sleepMs = 1000,
         public int $recoverInterval = 60,
         public bool $stopWhenEmpty = false,
+        public bool $prioritizeQueues = false,
     ) {
         if ($queues === []) {
             throw new InvalidArgumentException('A worker needs at least one queue');

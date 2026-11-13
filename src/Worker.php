@@ -71,7 +71,7 @@ final class Worker
                     $recovered = microtime(true);
                 }
 
-                $task = $this->store->reserve($options->queues, bin2hex(random_bytes(16)), $options->lease);
+                $task = $this->reserve($options);
                 if ($task === null) {
                     if ($options->stopWhenEmpty) {
                         break;
@@ -105,6 +105,25 @@ final class Worker
     public function stop(): void
     {
         $this->stopping = true;
+    }
+
+    /**
+     * Strict priority asks each queue in turn, so the store index stays per
+     * queue and no store needs to know about priorities.
+     */
+    private function reserve(WorkerOptions $options): ?ReservedTask
+    {
+        $owner = bin2hex(random_bytes(16));
+        if (!$options->prioritizeQueues) {
+            return $this->store->reserve($options->queues, $owner, $options->lease);
+        }
+        foreach ($options->queues as $queue) {
+            $task = $this->store->reserve([$queue], $owner, $options->lease);
+            if ($task !== null) {
+                return $task;
+            }
+        }
+        return null;
     }
 
     private function process(ReservedTask $reserved, int $timeout): void

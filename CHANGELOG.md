@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `WorkerOptions::$prioritizeQueues`. When enabled, the worker reserves
+  from each queue in the given order and takes the first available task, so
+  earlier queues have strict priority and can starve later ones. Disabled by
+  default: each store keeps its current selection policy. No store, SQL or
+  schema change.
 - A logger that throws no longer changes a task outcome, stops the worker loop
   or prevents the hard timeout from ending the process. Store failures still
   propagate.
