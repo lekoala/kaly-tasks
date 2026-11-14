@@ -64,10 +64,11 @@ a second dispatch with the same key neither advances nor postpones it. Retries
 use their normal SQL-clock delay after execution, independently of the original
 deadline. A scheduled insertion joins the application transaction as usual.
 
-Requires Kaly 0.6 for `Kaly\Task\ScheduledTaskDispatcher`. Services that schedule
-work depend on this interface; services that only submit tasks can keep
-`Kaly\Task\TaskDispatcher`. The direct dispatcher offers the minimal contract.
-Kaly's recording dispatcher supports scheduling with an injectable test clock.
+`Kaly\Task\ScheduledTaskDispatcher` comes from `lekoala/kaly-contracts ^1.0`.
+Kaly is optional; applications using it require Kaly 0.7 or later. Services that
+schedule work depend on this interface; services that only submit tasks can keep
+`Kaly\Task\TaskDispatcher`. Kaly's direct dispatcher offers the minimal contract,
+and its recording dispatcher supports scheduling with an injectable test clock.
 
 ### Moving a scheduled reminder
 

@@ -1,14 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-11-14
 
 - **Breaking:** depend on `lekoala/kaly-contracts` `^1.0` instead of
   `lekoala/kaly`. The interfaces keep their namespace (`Kaly\Task\*`), so no
   import or binding changes, and Kaly Tasks no longer follows Kaly minor
-  releases. The contracts conflict with Kaly below 0.7: a Kaly application
-  upgrades Kaly to 0.7 and Kaly Tasks in the same `composer update`
-  (`composer update lekoala/kaly lekoala/kaly-tasks --with-dependencies`),
-  otherwise Composer refuses the resolution.
+  releases. The contracts conflict with Kaly below 0.7. In a Kaly application,
+  first update the application's `composer.json` constraints to
+  `lekoala/kaly: ^0.7` and `lekoala/kaly-tasks: ^0.6`, then upgrade both together
+  with `composer update lekoala/kaly lekoala/kaly-tasks --with-all-dependencies`.
+  `composer update` alone does not change the application's version constraints.
 - **Breaking:** `Worker` takes an invoker closure instead of `Kaly\Di\Injector`:
   `Closure(callable&object): mixed`, which calls each decoded task with its
   services. With kaly-di, replace `$injector` by `$injector->invoke(...)`.
