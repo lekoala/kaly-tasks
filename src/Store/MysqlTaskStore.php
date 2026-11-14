@@ -111,7 +111,7 @@ final readonly class MysqlTaskStore implements TaskStore
         shuffle($queues);
         return $this->connection->transaction(function (Connection $connection) use ($queues, $owner, $leaseSeconds): ?ReservedTask {
             foreach ($queues as $queue) {
-                $row = $connection->fetchAll("SELECT id, name, payload, attempts FROM `{$this->table}` FORCE INDEX (pending)
+                $row = $connection->fetchAll("SELECT id, name, queue, payload, attempts FROM `{$this->table}` FORCE INDEX (pending)
                     WHERE status = 'pending' AND queue = ? AND available_at <= UTC_TIMESTAMP(6)
                     ORDER BY available_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", [$queue])[0] ?? null;
                 if ($row === null) {
@@ -125,7 +125,7 @@ final readonly class MysqlTaskStore implements TaskStore
                     WHERE id = ?",
                     [$owner, $leaseSeconds, $task->id],
                 );
-                return new ReservedTask($task->id, $task->name, $task->payload, $task->attempts + 1, $owner);
+                return new ReservedTask($task->id, $task->name, $task->queue, $task->payload, $task->attempts + 1, $owner);
             }
             return null;
         });

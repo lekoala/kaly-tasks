@@ -69,6 +69,7 @@ final class StoreValues
         return new ReservedTask(
             self::int($row['id']),
             self::string($row['name']),
+            self::string($row['queue']),
             self::string($row['payload']),
             self::int($row['attempts']),
             $owner,

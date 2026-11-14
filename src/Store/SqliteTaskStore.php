@@ -111,7 +111,7 @@ final readonly class SqliteTaskStore implements TaskStore
                 ORDER BY available_at, id
                 LIMIT 1
             )
-            RETURNING id, name, payload, attempts", [$owner, $leaseSeconds, ...$queues])[0] ?? null;
+            RETURNING id, name, queue, payload, attempts", [$owner, $leaseSeconds, ...$queues])[0] ?? null;
 
         return $row === null ? null : StoreValues::reserved($row, $owner);
     }

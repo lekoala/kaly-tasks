@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0 - 2026-11-14
+
+- Add `Kaly\Tasks\PermanentFailure`: thrown by a running task, it fails the task
+  at once, whatever attempts remain.
+- Add `Kaly\Tasks\RetryLater`: thrown by a running task, it delays the next
+  attempt by the given seconds. The delay replaces the backoff and is not capped
+  by `maxDelay`; the task still fails once it exhausts `maxAttempts`. Delays
+  outside 0–2147483647 are rejected when the exception is built.
+- Add an optional execution wrapper, `Worker::__construct(around: ...)`, called
+  with a `Kaly\Tasks\TaskRun` (id, name, queue, attempt, max attempts, decoded
+  task) and the invocation. It must run the task exactly once; any exception
+  it throws counts as a task failure. It wraps the invocation only, not
+  reservation, decoding or settlement.
+- **Breaking:** `ReservedTask` carries the task `queue`, after `name`. Custom
+  stores must return it from `reserve()`. No schema change.
+- Worker log context includes the queue.
+- Document retention as a setup step, long tasks and timeout limits, rolling
+  deploys of payload changes, and recurring tasks dispatched from several hosts.
+
 ## 0.4.0 - 2026-11-13
 
 - Add `WorkerOptions::$prioritizeQueues`. When enabled, the worker reserves

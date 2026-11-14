@@ -118,7 +118,7 @@ final readonly class PostgresTaskStore implements TaskStore
             SET status = 'running', owner = ?, attempts = t.attempts + 1,
                 lease_until = now() + CAST(? AS INTEGER) * INTERVAL '1 second'
             FROM next WHERE t.id = next.id
-            RETURNING t.id, t.name, CAST(t.payload AS TEXT) AS payload, t.attempts", [...$queues, $owner, $leaseSeconds])[0] ?? null;
+            RETURNING t.id, t.name, t.queue, CAST(t.payload AS TEXT) AS payload, t.attempts", [...$queues, $owner, $leaseSeconds])[0] ?? null;
 
         return $row === null ? null : StoreValues::reserved($row, $owner);
     }

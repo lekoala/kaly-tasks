@@ -12,6 +12,7 @@ use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\EncodedTask;
 use Kaly\Tasks\RetryPolicy;
 use Kaly\Tasks\TaskRegistry;
+use Kaly\Tasks\Tests\Fixtures\FailingTask;
 use Kaly\Tasks\Tests\Fixtures\Journal;
 use Kaly\Tasks\Tests\Fixtures\RecordTask;
 use Kaly\Tasks\Worker;
@@ -127,7 +128,8 @@ abstract class WorkerTestCase extends StoreTestCase
             ->register('test.steal-fail', StealThenFailTask::class)
             ->register('test.stop', StopWorkerTask::class)
             ->register('test.constructor', ConstructorCountingTask::class, retry: new RetryPolicy(maxAttempts: 1, delay: 0))
-            ->register('test.urgent', UrgentRecordTask::class, queue: 'urgent');
+            ->register('test.urgent', UrgentRecordTask::class, queue: 'urgent')
+            ->register('test.failing', FailingTask::class, retry: new RetryPolicy(maxAttempts: 3, delay: 0));
         $container = new Container(
             Definitions::create()
                 ->set(Journal::class, $this->journal)
@@ -319,5 +321,34 @@ abstract class WorkerTestCase extends StoreTestCase
     public function testPrioritizedQueuesStopWhenAllAreEmpty(): void
     {
         $this->assertSame(0, $this->work(queues: ['urgent', 'default'], prioritizeQueues: true));
+    }
+
+    public function testPermanentFailureFailsAtOnce(): void
+    {
+        $this->tasks->dispatch(new FailingTask());
+
+        $this->assertSame(1, $this->work());
+
+        $row = $this->row(1);
+        $this->assertSame(['failed', 1, 'Kaly\Tasks\PermanentFailure: Invalid data'], [
+            $row['status'],
+            $row['attempts'],
+            $row['last_error'],
+        ]);
+    }
+
+    public function testRetryLaterDelaysTheNextAttempt(): void
+    {
+        $this->tasks->dispatch(new FailingTask(retryAfter: 600));
+
+        // The policy has no delay: only the requested one keeps the task waiting
+        $this->assertSame(1, $this->work());
+        $stats = $this->store()->stats();
+        $this->assertSame([0, 1], [$stats->ready, $stats->scheduled]);
+        $this->assertSame('Kaly\Tasks\RetryLater: Rate limited', $this->row(1)['last_error']);
+
+        $this->age(601);
+        $this->assertSame(1, $this->work());
+        $this->assertSame(['ran', 'ran'], $this->journal->entries);
     }
 }

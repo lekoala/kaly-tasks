@@ -228,7 +228,7 @@ abstract class TaskStoreTestCase extends StoreTestCase
     #[DataProvider('invalidBounds')]
     public function testRejectsOutOfRangeDurationsAndLimits(string $case): void
     {
-        $task = new ReservedTask(1, 'a', '{}', 1, 'owner');
+        $task = new ReservedTask(1, 'a', 'default', '{}', 1, 'owner');
 
         $this->expectException(InvalidArgumentException::class);
         match ($case) {
@@ -324,7 +324,7 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->store()->push(new EncodedTask('a', 'default', '{}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $impostor = new ReservedTask($task->id, $task->name, $task->payload, $task->attempts, $task->owner . "\0other");
+        $impostor = new ReservedTask($task->id, $task->name, $task->queue, $task->payload, $task->attempts, $task->owner . "\0other");
         try {
             match ($operation) {
                 'complete' => $this->store()->complete($impostor),
@@ -388,7 +388,8 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->store()->push(new EncodedTask('a', 'mail', '{}'));
 
         $this->assertNull($this->reserve('default'));
-        $this->assertSame('a', $this->store()->reserve(['default', 'mail'], 'owner', 60)?->name);
+        $task = $this->store()->reserve(['default', 'mail'], 'owner', 60);
+        $this->assertSame(['a', 'mail'], [$task?->name, $task?->queue]);
     }
 
     public function testDeduplicatesByNameAndKeyAcrossStatuses(): void
@@ -417,7 +418,7 @@ abstract class TaskStoreTestCase extends StoreTestCase
         $this->store()->push(new EncodedTask('a', 'default', '{}'));
         $task = $this->reserve();
         $this->assertNotNull($task);
-        $impostor = new ReservedTask($task->id, $task->name, $task->payload, $task->attempts, 'owner-b');
+        $impostor = new ReservedTask($task->id, $task->name, $task->queue, $task->payload, $task->attempts, 'owner-b');
 
         $this->assertFalse($this->store()->complete($impostor));
         $this->assertFalse($this->store()->fail($impostor, 'no'));

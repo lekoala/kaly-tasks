@@ -126,6 +126,29 @@ Deduplicating by `appointmentId` alone cannot move a reminder because it preserv
 the existing deadline. Versioned keys provide a recipe without a cancellation or
 rescheduling API.
 
+### Recurring tasks
+
+There is no recurring scheduler: cron or Symfony Scheduler decides which
+occurrences are due and dispatches them. Deduplicating by the occurrence stores
+it once, even when several hosts dispatch it:
+
+```php
+$registry->register('reports.daily', GenerateDailyReport::class, deduplicateBy: 'period');
+
+// On every host, from cron
+$tasks->dispatch(new GenerateDailyReport($clock->now()->format('Y-m-d')));
+```
+
+This prevents duplicate insertions, not missed or repeated occurrences:
+
+- when no host dispatches at the scheduled time, the occurrence does not
+  exist: catching up belongs to the scheduler or the application;
+- once its key is purged, dispatching an old period again stores it again;
+- a worker crashing after an external effect runs the task again.
+
+For an effect that must happen once per period, such as billing, keep a
+business constraint (a unique row per period) and check it in the task.
+
 ## Guarantees
 
 - **At least once.** A task runs until it succeeds, fails for good, or exceeds
@@ -139,7 +162,9 @@ rescheduling API.
   Keeping `timeout < lease` helps prevent overlap; it is not a condition for
   accepting settlement.
 - **Bounded retries.** Exponential backoff per task type, then `failed`. A
-  task abandoned too often (worker crashes, timeouts) fails without running.
+  task can fail at once or choose its next delay, see
+  [Failures and retries](#failures-and-retries). A task abandoned too often
+  (worker crashes, timeouts) fails without running.
 - **Whitelisted JSON payloads.** Only registered types are stored and rebuilt,
   under stable names. No PHP serialization, no class name in the database.
 - **Deduplication.** A task type may declare a deduplication parameter: a task
@@ -326,10 +351,8 @@ for tasks without constructor parameters; JSON lists such as `[]` are rejected.
 Float values must be finite, including inside nested arrays. Decoding checks
 enum backing types strictly and reports invalid payloads with `UnexpectedValueException`.
 
-Stored payloads are a public contract until every stored task has been
-processed or migrated. Adding an optional parameter is compatible; renaming,
-retyping or removing one (or an enum case) is not: register the new shape
-under a new name and keep the old one until its tasks are drained.
+Stored payloads are a public contract in both directions while tasks are
+stored: see [Deploying task changes](#deploying-task-changes).
 
 `dispatch()` follows Kaly's `void` contract. To observe whether deduplication
 skipped an insertion, use `$store->push($registry->encode($task))`: it returns
@@ -367,7 +390,8 @@ The worker is crash-only and recycles itself:
 - a store failure (lost connection) propagates and ends the process;
 - with ext-pcntl, SIGTERM finishes the current task then exits, and a task
   running beyond `timeout` ends the process. Its lease expires and the task is
-  retried. Keep `timeout` above your external call timeouts and below `lease`.
+  retried. Keep `timeout` above your external call timeouts and below `lease`,
+  see [Long tasks and timeouts](#long-tasks-and-timeouts).
 
 Without ext-pcntl (Windows), there is no hard timeout: the lease must cover the
 longest run.
@@ -405,6 +429,152 @@ context: identity and authorization travel in its data and are checked again.
 With PostgreSQL, leases and delays use the database clock, so workers on
 several hosts agree.
 
+### Failures and retries
+
+A task that throws is retried with its type's backoff until `maxAttempts`, then
+fails. Two exceptions change that:
+
+```php
+use Kaly\Tasks\PermanentFailure;
+use Kaly\Tasks\RetryLater;
+
+public function __invoke(SmsGateway $gateway): void
+{
+    try {
+        $gateway->send($this->deliveryId);
+    } catch (InvalidNumber $e) {
+        throw new PermanentFailure($e->getMessage(), previous: $e);
+    } catch (RateLimited $e) {
+        throw new RetryLater($e->retryAfterSeconds, $e->getMessage(), $e);
+    }
+}
+```
+
+- `PermanentFailure` fails the task at once, whatever attempts remain:
+  retrying invalid data only wastes attempts.
+- `RetryLater` delays the next attempt by the given seconds, measured with the
+  store clock. The delay replaces the backoff and is not capped by `maxDelay`,
+  but the attempt still counts: once `maxAttempts` is reached the task fails,
+  so an API answering 429 forever cannot keep a task alive. A delay outside
+  0–2147483647 is rejected when the exception is built; convert a
+  `Retry-After` date to seconds yourself.
+- Only the exception leaving the task counts: previous exceptions are not
+  inspected.
+- They classify execution failures. Thrown by the constructor, while the task
+  is decoded, any exception fails the task at once.
+- Throw them from the task or its adapters: domain code does not need to know
+  about the queue.
+
+### Wrapping execution
+
+One optional wrapper runs around each task invocation, to set up and clean a
+log context, a trace span, an error tracker scope or a tenant:
+
+```php
+use Closure;
+use Kaly\Tasks\TaskRun;
+
+$worker = new Worker($store, $registry, $injector, $logger,
+    around: static function (TaskRun $run, Closure $next) use ($logContext): void {
+        $logContext->push(['task_id' => $run->id, 'task' => $run->name, 'attempt' => $run->attempt]);
+        try {
+            $next();
+        } finally {
+            $logContext->pop();
+        }
+    },
+);
+```
+
+`TaskRun` carries the stored id, the registered name, the queue, the attempt
+(from 1), `maxAttempts` and the decoded task. It does not expose the owner
+token.
+
+- Call `$next()` exactly once and let its exceptions through. A wrapper that
+  skips the task, or calls it twice, fails the attempt with a `LogicException`
+  and the retry policy applies. `PermanentFailure` and `RetryLater` keep their
+  meaning through the wrapper.
+- Any exception leaving the wrapper is a failure of the task: the worker cannot
+  tell the wrapper's errors from the task's. If a span export fails after the
+  task sent an email, the task runs again and sends it again. Instrumentation
+  must swallow its own errors, and cleanup in `finally` must not throw, or it
+  replaces the task's exception and its classification.
+- When cleanup cannot restore a clean state, call `$worker->stop()`: the
+  supervisor starts a fresh process instead of leaking state into the next task.
+- It wraps the invocation only, under the task timeout. Reservation, decoding,
+  settlement and lost leases happen outside it and are reported through the
+  worker logger: the wrapper alone does not observe everything.
+- It is not a transaction boundary; a task opens its own transactions. A tenant
+  context does not replace the authorization checks of the use case.
+- There is a single wrapper, not a middleware stack: compose concerns inside it.
+
+## Going to production
+
+### Retention
+
+Purging is part of the setup, not optional maintenance. Without it the table
+grows and every deduplication key stays active forever. Choose a retention
+explicitly and schedule it:
+
+```php
+// bin/tasks-purge.php, daily from cron or a systemd timer
+$store->purge(
+    olderThanSeconds: 7 * 86400,
+    failedOlderThanSeconds: null, // keep failed tasks until reviewed
+);
+```
+
+- Retention is the deduplication window. It counts from the moment a task
+  finished, not from its dispatch, plus the time until the next purge runs.
+- Pending and running tasks always keep their key: a task scheduled months
+  ahead holds it until it finishes and is purged.
+- Purging failed tasks is a separate decision. Keep them while someone reviews
+  `failed()`; pass `failedOlderThanSeconds` only when failures are monitored
+  elsewhere, for example by alerting on `stats()->failed`, so errors are not
+  deleted unseen.
+
+### Long tasks and timeouts
+
+Order the limits with a margin at each step: external call timeouts, then the
+worker `timeout`, then the `lease`.
+
+- Give every external operation its own timeout: SQL statements, HTTP, SMTP.
+  PHP runs the `SIGALRM` handler only when the engine regains control, so a
+  call blocked inside an extension (a long SQL query, curl without a timeout)
+  delays the hard timeout until it returns.
+- Leases are not renewed while a task runs. For long tasks with a predictable
+  duration, use a dedicated queue served by its own worker with a longer
+  timeout and lease:
+
+  ```php
+  // bin/worker-exports.php
+  $worker->run(new WorkerOptions(queues: ['exports'], lease: 3900, timeout: 3600));
+  ```
+
+- An expired lease does not stop a running task: see [Guarantees](#guarantees)
+  for when a late settlement still applies.
+
+### Deploying task changes
+
+Stored payloads are a contract in both directions. New code reads payloads
+stored by the previous version, and during a rolling deploy previous workers
+read payloads from new producers. Decoding is strict: a payload with a key the
+worker does not know fails for good, without retry.
+
+- Adding an optional parameter: deploy the workers first, then the producers.
+- Renaming, retyping or removing a parameter, or an enum case: register the new
+  shape under a new name, deploy workers that know both names before any
+  producer dispatches the new one, and keep the old name until its tasks are
+  drained.
+- Drained includes tasks scheduled for later, retries waiting for their delay,
+  and failed tasks you may still `retryFailed()`.
+- When workers and producers cannot be deployed in order, isolate the versions
+  in separate queues: new producers dispatch to a queue only new workers poll.
+
+Unknown keys are rejected on purpose: silently dropping data would be worse
+than a visible failure. A task failed this way can be retried with
+`retryFailed()` once compatible workers run.
+
 ## Maintenance
 
 ```php
@@ -421,7 +591,8 @@ or another failure replaces it.
 
 Done and failed tasks are kept until purged: their deduplication keys stay
 active for the retention period. Without the second argument, failed tasks are
-kept until you retry or delete them.
+kept until you retry or delete them. Schedule the purge as part of the setup:
+see [Retention](#retention).
 
 ```php
 $stats = $store->stats();           // whole table

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks;
 
+use Closure;
 use Kaly\Di\Injector;
 use Kaly\Tasks\Store\ReservedTask;
 use Kaly\Tasks\Store\TaskStore;
+use LogicException;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Throwable;
@@ -24,6 +26,9 @@ use Throwable;
  *
  * With ext-pcntl, SIGTERM, SIGINT and SIGQUIT finish the current task then
  * stop, and a task running beyond `timeout` ends the process.
+ *
+ * A task fails at once with PermanentFailure, and RetryLater chooses its next
+ * delay. Any other exception retries with the task's backoff.
  */
 final class Worker
 {
@@ -38,11 +43,18 @@ final class Worker
 
     private bool $previousAsyncSignals = false;
 
+    /**
+     * @param null|Closure(TaskRun,Closure():void):void $around Wraps each task
+     *  invocation, to set up and clean a log context, a trace span or a tenant.
+     *  It must call its second argument exactly once and let its exceptions
+     *  through: any exception it throws counts as a failure of the task.
+     */
     public function __construct(
         private readonly TaskStore $store,
         private readonly TaskRegistry $registry,
         private readonly Injector $injector,
         private readonly LoggerInterface $logger = new NullLogger(),
+        private readonly ?Closure $around = null,
     ) {}
 
     /**
@@ -128,7 +140,12 @@ final class Worker
 
     private function process(ReservedTask $reserved, int $timeout): void
     {
-        $context = ['id' => $reserved->id, 'task' => $reserved->name, 'attempt' => $reserved->attempts];
+        $context = [
+            'id' => $reserved->id,
+            'task' => $reserved->name,
+            'queue' => $reserved->queue,
+            'attempt' => $reserved->attempts,
+        ];
         // An unknown type fails to decode below, whatever its attempts
         $type = $this->registry->type($reserved->name);
         $retry = $type === null ? RetryPolicy::never() : $type->retry;
@@ -155,16 +172,14 @@ final class Worker
                 return;
             }
             try {
-                // Registration guarantees __invoke()
-                assert(is_callable($task));
-                $this->injector->invoke($task);
+                $this->invoke($reserved, $task, $retry);
             } catch (Throwable $e) {
                 $error = $e::class . ': ' . $e->getMessage();
-                if ($reserved->attempts >= $retry->maxAttempts) {
+                if ($e instanceof PermanentFailure || $reserved->attempts >= $retry->maxAttempts) {
                     $this->log('error', 'Task {task} #{id} failed: {error}', $context + ['error' => $error, 'exception' => $e]);
                     $this->settled($this->store->fail($reserved, $error), $context);
                 } else {
-                    $delay = $retry->delayAfter($reserved->attempts);
+                    $delay = $e instanceof RetryLater ? $e->seconds : $retry->delayAfter($reserved->attempts);
                     $this->log(
                         'warning',
                         'Task {task} #{id} will retry in {delay}s: {error}',
@@ -182,6 +197,30 @@ final class Worker
         }
 
         $this->settled($this->store->complete($reserved), $context);
+    }
+
+    private function invoke(ReservedTask $reserved, object $task, RetryPolicy $retry): void
+    {
+        // Registration guarantees __invoke()
+        assert(is_callable($task));
+        if ($this->around === null) {
+            $this->injector->invoke($task);
+            return;
+        }
+
+        $invoked = false;
+        $next = function () use ($task, &$invoked): void {
+            if ($invoked) {
+                throw new LogicException('A task runs once per attempt');
+            }
+            $invoked = true;
+            $this->injector->invoke($task);
+        };
+        $run = new TaskRun($reserved->id, $reserved->name, $reserved->queue, $reserved->attempts, $retry->maxAttempts, $task);
+        ($this->around)($run, $next);
+        if (!$invoked) {
+            throw new LogicException('The execution wrapper did not run the task');
+        }
     }
 
     /**
@@ -233,6 +272,7 @@ final class Worker
                 $this->log('critical', 'Task {task} #{id} exceeded {timeout}s, the worker exits', [
                     'id' => $task?->id,
                     'task' => $task?->name,
+                    'queue' => $task?->queue,
                     'timeout' => $options->timeout,
                 ]);
                 // Deliberately skips the task settlement: the lease expires and

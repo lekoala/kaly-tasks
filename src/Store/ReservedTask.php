@@ -12,6 +12,7 @@ final readonly class ReservedTask
     public function __construct(
         public int $id,
         public string $name,
+        public string $queue,
         public string $payload,
         public int $attempts,
         public string $owner,
