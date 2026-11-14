@@ -32,6 +32,6 @@ The goal before 1.0 is to converge toward the smallest, clearest, most durable p
   `RuntimeException`).
 - Kaly Tasks aims to stay usable without the Kaly framework. Exceptions extend
   SPL exceptions, never `Kaly\Ex` or `Kaly\Http\Exception\HttpException`.
-  Do not add dependencies on Kaly beyond the task dispatcher contracts, which
-  are meant to move to a separate contracts package. kaly-di stays a dev and
-  suggested dependency: the worker takes an invoker closure.
+  Kaly Tasks depends on `lekoala/kaly-contracts` (the task dispatcher
+  interfaces), never on `lekoala/kaly`. kaly-di stays a dev and suggested
+  dependency: the worker takes an invoker closure.

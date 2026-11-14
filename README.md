@@ -5,8 +5,10 @@ A durable SQL task queue for invocable PHP objects, with first-class
 
 It stores tasks in PostgreSQL, MySQL or SQLite and runs them in supervised
 worker processes: a durable task queue without a queue server. It implements
-Kaly's task dispatcher contracts, so with Kaly it is one optional engine and
-application code does not change:
+the task dispatcher contracts of
+[kaly-contracts](https://github.com/lekoala/kaly-contracts), without depending
+on Kaly itself, so with Kaly it is one optional engine and application code does
+not change:
 
 ```php
 $this->tasks->dispatch(new GeneratePdf($documentId));
