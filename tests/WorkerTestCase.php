@@ -137,7 +137,7 @@ abstract class WorkerTestCase extends StoreTestCase
                 // Lets a task stop the running worker
                 ->set(Worker::class, fn(): Worker => $this->worker),
         );
-        $this->worker = new Worker($this->store(), $this->registry, new Injector($container), $this->logger);
+        $this->worker = new Worker($this->store(), $this->registry, (new Injector($container))->invoke(...), $this->logger);
         $this->tasks = new DatabaseTaskDispatcher($this->store(), $this->registry);
     }
 

@@ -31,7 +31,7 @@ $engine = match ($engine) {
 };
 $registry = (new TaskRegistry())->register('test.log', LogTask::class);
 $store = $engine->store(new PdoConnection($engine->connect()), $table);
-$worker = new Worker($store, $registry, new Injector(new Container([PDO::class => $engine->connect()])));
+$worker = new Worker($store, $registry, (new Injector(new Container([PDO::class => $engine->connect()])))->invoke(...));
 
 // Signals readiness, then starts with the other workers
 touch($barrier . '/ready-' . getmypid());

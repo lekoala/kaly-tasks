@@ -1,11 +1,12 @@
 # Kaly Tasks
 
-A durable SQL task queue for [Kaly](https://github.com/lekoala/kaly) tasks.
+A durable SQL task queue for invocable PHP objects, with first-class
+[Kaly](https://github.com/lekoala/kaly) integration.
 
-Kaly defines the task model and its dispatcher contracts. This
-package is one optional engine: it stores tasks in PostgreSQL, MySQL or SQLite and
-runs them in supervised worker processes. A durable task queue without a queue
-server. Application code does not change:
+It stores tasks in PostgreSQL, MySQL or SQLite and runs them in supervised
+worker processes: a durable task queue without a queue server. It implements
+Kaly's task dispatcher contracts, so with Kaly it is one optional engine and
+application code does not change:
 
 ```php
 $this->tasks->dispatch(new GeneratePdf($documentId));
@@ -376,11 +377,18 @@ $container = $app->container();
 $worker = new Worker(
     new PostgresTaskStore(new PdoConnection(new PDO($queueDsn))),
     $container->get(TaskRegistry::class),
-    $container->get(Injector::class),
+    $container->get(Injector::class)->invoke(...),
     $container->get(LoggerInterface::class),
 );
 $worker->run(new WorkerOptions(queues: ['default', 'support']));
 ```
+
+The third argument is the invoker: it calls each decoded task and provides the
+services of its `__invoke()`. With kaly-di, pass `$injector->invoke(...)`. Any
+other container that can call a callable with its dependencies fits behind a
+closure; tasks without services only need `static fn(object $task) => $task()`.
+The invoker is required on purpose: a worker that silently called tasks without
+their services would turn a configuration mistake into failed tasks.
 
 Run it under a supervisor (systemd, supervisord, a container restart policy).
 The worker is crash-only and recycles itself:
@@ -474,7 +482,7 @@ log context, a trace span, an error tracker scope or a tenant:
 use Closure;
 use Kaly\Tasks\TaskRun;
 
-$worker = new Worker($store, $registry, $injector, $logger,
+$worker = new Worker($store, $registry, $injector->invoke(...), $logger,
     around: static function (TaskRun $run, Closure $next) use ($logContext): void {
         $logContext->push(['task_id' => $run->id, 'task' => $run->name, 'attempt' => $run->attempt]);
         try {

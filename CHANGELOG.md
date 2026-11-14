@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** `Worker` takes an invoker closure instead of `Kaly\Di\Injector`:
+  `Closure(callable&object): mixed`, which calls each decoded task with its
+  services. With kaly-di, replace `$injector` by `$injector->invoke(...)`.
+  Without a container, tasks without services can use
+  `static fn(object $task) => $task()`. The invoker is required.
+- **Breaking:** `lekoala/kaly-di` is no longer required; it moves to
+  `require-dev` and `suggest`. Applications using the Injector keep it through
+  their own Kaly dependency or require it directly.
+- **Breaking:** `PermanentFailure` and `RetryLater` extend `RuntimeException`
+  instead of `Kaly\Ex`, so task failures do not depend on the Kaly framework.
+  Catch them by their own class.
+
 ## 0.5.0 - 2026-11-14
 
 - Add `Kaly\Tasks\PermanentFailure`: thrown by a running task, it fails the task

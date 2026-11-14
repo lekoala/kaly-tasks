@@ -29,7 +29,9 @@ The goal before 1.0 is to converge toward the smallest, clearest, most durable p
   the constructor. Keep constructor-promoted properties in the constructor.
 - Exception messages are a single sentence, with no trailing punctuation. This
   applies to native exceptions too (`InvalidArgumentException`, `LogicException`,
-  `RuntimeException`), not only to `Kaly\Ex`.
-- Client-facing failures extend `Kaly\Http\Exception\HttpException` and carry their own
-  status, headers and body. A non-HTTP failure is a plain `Kaly\Ex` and
-  carries no status.
+  `RuntimeException`).
+- Kaly Tasks aims to stay usable without the Kaly framework. Exceptions extend
+  SPL exceptions, never `Kaly\Ex` or `Kaly\Http\Exception\HttpException`.
+  Do not add dependencies on Kaly beyond the task dispatcher contracts, which
+  are meant to move to a separate contracts package. kaly-di stays a dev and
+  suggested dependency: the worker takes an invoker closure.

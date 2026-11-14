@@ -36,7 +36,7 @@ $store = $engine->store(new PdoConnection($engine->connect()), $table);
 $worker = new Worker(
     $store,
     $registry,
-    new Injector(new Container()),
+    (new Injector(new Container()))->invoke(...),
     ($arguments[5] ?? '0') === '1' ? new ThrowingLogger() : new NullLogger(),
 );
 

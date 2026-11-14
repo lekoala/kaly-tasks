@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Kaly\Tasks;
 
 use Closure;
-use Kaly\Di\Injector;
 use Kaly\Tasks\Store\ReservedTask;
 use Kaly\Tasks\Store\TaskStore;
 use LogicException;
@@ -21,8 +20,9 @@ use Throwable;
  * `maxTasks`, `maxRuntime` or `memoryLimit` so the supervisor (systemd,
  * supervisord, a container restart policy) starts a fresh process.
  *
- * Task services come from the container through the Injector. Shared services
- * must be re-entrant: the worker opens no scope per task.
+ * The invoker calls each task and provides the services of its `__invoke()`,
+ * for example `$injector->invoke(...)` with kaly-di. Shared services must be
+ * re-entrant: the worker opens no scope per task.
  *
  * With ext-pcntl, SIGTERM, SIGINT and SIGQUIT finish the current task then
  * stop, and a task running beyond `timeout` ends the process.
@@ -44,6 +44,8 @@ final class Worker
     private bool $previousAsyncSignals = false;
 
     /**
+     * @param Closure(callable&object):mixed $invoke Calls a decoded task with its
+     *  services; its return value is ignored
      * @param null|Closure(TaskRun,Closure():void):void $around Wraps each task
      *  invocation, to set up and clean a log context, a trace span or a tenant.
      *  It must call its second argument exactly once and let its exceptions
@@ -52,7 +54,7 @@ final class Worker
     public function __construct(
         private readonly TaskStore $store,
         private readonly TaskRegistry $registry,
-        private readonly Injector $injector,
+        private readonly Closure $invoke,
         private readonly LoggerInterface $logger = new NullLogger(),
         private readonly ?Closure $around = null,
     ) {}
@@ -204,7 +206,7 @@ final class Worker
         // Registration guarantees __invoke()
         assert(is_callable($task));
         if ($this->around === null) {
-            $this->injector->invoke($task);
+            ($this->invoke)($task);
             return;
         }
 
@@ -214,7 +216,7 @@ final class Worker
                 throw new LogicException('A task runs once per attempt');
             }
             $invoked = true;
-            $this->injector->invoke($task);
+            ($this->invoke)($task);
         };
         $run = new TaskRun($reserved->id, $reserved->name, $reserved->queue, $reserved->attempts, $retry->maxAttempts, $task);
         ($this->around)($run, $next);

@@ -63,7 +63,7 @@ final class WorkerTest extends TestCase
         }
         $registry = (new TaskRegistry())->register('test.record', RecordTask::class, retry: new RetryPolicy(maxAttempts: 2));
         $container = new Container(Definitions::create()->set(Journal::class, new Journal()));
-        $worker = new Worker($store, $registry, new Injector($container));
+        $worker = new Worker($store, $registry, (new Injector($container))->invoke(...));
 
         try {
             $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1));
@@ -89,7 +89,7 @@ final class WorkerTest extends TestCase
         }
         $registry = (new TaskRegistry())->register('test.record', RecordTask::class, retry: new RetryPolicy(maxAttempts: 2));
         $container = new Container(Definitions::create()->set(Journal::class, new Journal()));
-        $worker = new Worker($store, $registry, new Injector($container), new ThrowingLogger());
+        $worker = new Worker($store, $registry, (new Injector($container))->invoke(...), new ThrowingLogger());
 
         $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1)));
     }
@@ -103,7 +103,7 @@ final class WorkerTest extends TestCase
         $store->expects($this->once())->method('complete')->with($reserved)->willReturn(false);
         $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
         $container = new Container(Definitions::create()->set(Journal::class, new Journal()));
-        $worker = new Worker($store, $registry, new Injector($container), new ThrowingLogger());
+        $worker = new Worker($store, $registry, (new Injector($container))->invoke(...), new ThrowingLogger());
 
         $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1, sleepMs: 0, stopWhenEmpty: true)));
     }
@@ -113,7 +113,7 @@ final class WorkerTest extends TestCase
         $store = $this->createMock(TaskStore::class);
         $store->expects($this->once())->method('recover')->willReturn(1);
         $store->expects($this->once())->method('reserve')->willReturn(null);
-        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()), new ThrowingLogger());
+        $worker = new Worker($store, new TaskRegistry(), static fn(object $task) => $task(), new ThrowingLogger());
 
         $this->assertSame(0, $worker->run(new WorkerOptions(timeout: 0, sleepMs: 0, stopWhenEmpty: true)));
     }
@@ -126,7 +126,7 @@ final class WorkerTest extends TestCase
         $store = $this->createMock(TaskStore::class);
         $store->expects($this->once())->method('recover')->willReturn(0);
         $store->expects($this->once())->method('reserve')->willReturn(null);
-        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()), new ThrowingLogger());
+        $worker = new Worker($store, new TaskRegistry(), static fn(object $task) => $task(), new ThrowingLogger());
 
         $this->assertSame(0, $worker->run(new WorkerOptions(sleepMs: 0, stopWhenEmpty: true)));
     }
@@ -136,7 +136,7 @@ final class WorkerTest extends TestCase
         $store = $this->createMock(TaskStore::class);
         $store->method('recover')->willReturn(0);
         $store->expects($this->once())->method('reserve')->with(['high', 'low'])->willReturn(null);
-        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()));
+        $worker = new Worker($store, new TaskRegistry(), static fn(object $task) => $task());
 
         $this->assertSame(0, $worker->run(new WorkerOptions(queues: ['high', 'low'], timeout: 0, sleepMs: 0, stopWhenEmpty: true)));
     }
@@ -153,7 +153,7 @@ final class WorkerTest extends TestCase
                 $calls[] = [$queues, $owner];
                 return null;
             });
-        $worker = new Worker($store, new TaskRegistry(), new Injector(new Container()));
+        $worker = new Worker($store, new TaskRegistry(), static fn(object $task) => $task());
 
         $this->assertSame(
             0,
@@ -178,7 +178,7 @@ final class WorkerTest extends TestCase
         $store->expects($this->once())->method('complete')->with($reserved)->willReturn(true);
         $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
         $container = new Container(Definitions::create()->set(Journal::class, new Journal()));
-        $worker = new Worker($store, $registry, new Injector($container));
+        $worker = new Worker($store, $registry, (new Injector($container))->invoke(...));
 
         $this->assertSame(1, $worker->run(new WorkerOptions(queues: ['high', 'low'], timeout: 0, maxTasks: 1, prioritizeQueues: true)));
     }
@@ -209,7 +209,7 @@ final class WorkerTest extends TestCase
             ->register('test.record', RecordTask::class, retry: new RetryPolicy(maxAttempts: 3, delay: 10, maxDelay: 60))
             ->register('test.failing', FailingTask::class, retry: new RetryPolicy(maxAttempts: 3, delay: 10, maxDelay: 60));
         $container = new Container(Definitions::create()->set(Journal::class, $journal));
-        $worker = new Worker($store, $registry, new Injector($container), around: $around);
+        $worker = new Worker($store, $registry, (new Injector($container))->invoke(...), around: $around);
 
         $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1)));
     }
@@ -344,5 +344,18 @@ final class WorkerTest extends TestCase
             },
         );
         $this->assertFalse($wrapped);
+    }
+
+    public function testInvokerNeedsNoContainer(): void
+    {
+        $reserved = new ReservedTask(1, 'test.record', 'default', '{"entry":"ok"}', 1, 'owner');
+        $store = $this->storeSettling($reserved, 'complete');
+        $journal = new Journal();
+        $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
+        // The invoker alone decides how a task gets its services
+        $worker = new Worker($store, $registry, static fn(object $task) => $task($journal));
+
+        $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1)));
+        $this->assertSame(['ok'], $journal->entries);
     }
 }

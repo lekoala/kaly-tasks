@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks;
 
-use Kaly\Ex;
+use RuntimeException;
 
 /**
  * Thrown by a running task that must not be retried, such as invalid data.
@@ -13,4 +13,4 @@ use Kaly\Ex;
  * the task or its adapters, not from domain code that should not depend on
  * the queue.
  */
-class PermanentFailure extends Ex {}
+class PermanentFailure extends RuntimeException {}
