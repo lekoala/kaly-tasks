@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-11-16
 
 - Add `TaskSequenceDispatcher::sequence([...], notBefore: ...)`, implemented by
   `DatabaseTaskDispatcher`, for durable linear sequences on PostgreSQL, SQLite
