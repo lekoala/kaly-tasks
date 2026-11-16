@@ -45,7 +45,8 @@ final class TaskChain
                 throw new InvalidArgumentException('Continuation steps need a task name and a queue');
             }
             try {
-                json_decode($task->payload, depth: self::PAYLOAD_DECODE_DEPTH, flags: JSON_THROW_ON_ERROR);
+                // Decode like TaskRegistry: objects may have keys that stdClass rejects, such as "\0key"
+                json_decode($task->payload, true, self::PAYLOAD_DECODE_DEPTH, JSON_THROW_ON_ERROR);
             } catch (JsonException $error) {
                 throw new InvalidArgumentException('A continuation payload must be a JSON object', 0, $error);
             }

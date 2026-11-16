@@ -57,6 +57,13 @@ final class TaskChainTest extends TestCase
         $this->assertEquals($steps, TaskChain::decode(TaskChain::encode($steps)));
     }
 
+    public function testPayloadKeysThatAreInvalidObjectPropertiesAreAccepted(): void
+    {
+        // TaskRegistry decodes payloads as arrays, so "\0key" is a valid payload key.
+        $steps = [new EncodedTask('a', 'default', '{"\\u0000key":"value"}')];
+        $this->assertEquals($steps, TaskChain::decode(TaskChain::encode($steps)));
+    }
+
     public function testInvalidUtf8MetadataIsRejectedBeforeStorage(): void
     {
         $this->expectException(InvalidArgumentException::class);
