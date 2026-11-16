@@ -10,6 +10,7 @@ use Doctrine\DBAL\DriverManager;
 use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\Store\PostgresTaskStore;
+use Kaly\Tasks\Store\TaskChain;
 use Kaly\Tasks\TaskRegistry;
 use Kaly\Tasks\Tests\Engine\OnPostgres;
 use Kaly\Tasks\Tests\Fixtures\RecordTask;
@@ -33,17 +34,19 @@ class ConnectionTest extends StoreTestCase
         yield 'cycle' => ['cycle'];
     }
 
-    /** @return iterable<string,array{string,bool}> */
+    /** @return iterable<string,array{string,bool,bool}> */
     public static function dispatches(): iterable
     {
         foreach (['pdo', 'doctrine', 'cycle'] as $library) {
-            yield $library . ' immediate' => [$library, false];
-            yield $library . ' scheduled' => [$library, true];
+            yield $library . ' immediate' => [$library, false, false];
+            yield $library . ' scheduled' => [$library, true, false];
+            yield $library . ' sequence' => [$library, false, true];
+            yield $library . ' scheduled sequence' => [$library, true, true];
         }
     }
 
     #[DataProvider('dispatches')]
-    public function testDispatchJoinsTheApplicationTransaction(string $library, bool $scheduled): void
+    public function testDispatchJoinsTheApplicationTransaction(string $library, bool $scheduled, bool $sequence): void
     {
         $application = match ($library) {
             'pdo' => $this->postgres()->viaPdo(),
@@ -55,12 +58,20 @@ class ConnectionTest extends StoreTestCase
 
         $notBefore = $scheduled ? new DateTimeImmutable('+1 hour') : null;
         $application['begin']();
-        $tasks->dispatch(new RecordTask('rolled back'), notBefore: $notBefore);
+        if ($sequence) {
+            $tasks->sequence([new RecordTask('rolled back'), new RecordTask('next')], notBefore: $notBefore);
+        } else {
+            $tasks->dispatch(new RecordTask('rolled back'), notBefore: $notBefore);
+        }
         $application['rollback']();
         $this->assertSame(0, $this->countTasks());
 
         $application['begin']();
-        $tasks->dispatch(new RecordTask('committed'), notBefore: $notBefore);
+        if ($sequence) {
+            $tasks->sequence([new RecordTask('committed'), new RecordTask('next')], notBefore: $notBefore);
+        } else {
+            $tasks->dispatch(new RecordTask('committed'), notBefore: $notBefore);
+        }
         $this->assertSame(0, $this->countTasks(), 'Invisible to other connections before the commit');
         $application['commit']();
         $this->assertSame(1, $this->countTasks());
@@ -72,6 +83,7 @@ class ConnectionTest extends StoreTestCase
         $reserved = $store->reserve(['default'], 'owner', 60);
         $this->assertNotNull($reserved);
         $this->assertSame(['test.record', '{"entry":"committed"}'], [$reserved->name, $reserved->payload]);
+        $this->assertCount($sequence ? 1 : 0, TaskChain::decode($reserved->chain));
         $store->fail($reserved, 'Broken');
         $this->assertSame([$reserved->id], array_column($store->failed(10), 'id'));
     }

@@ -9,10 +9,12 @@ namespace Kaly\Tasks;
  */
 final readonly class EncodedTask
 {
+    /** @param list<EncodedTask> $chain Remaining steps, without deduplication keys or nested chains */
     public function __construct(
         public string $name,
         public string $queue,
         public string $payload,
         public ?string $deduplicationKey = null,
+        public array $chain = [],
     ) {}
 }

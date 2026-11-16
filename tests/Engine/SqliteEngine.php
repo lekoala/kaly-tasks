@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests\Engine;
 
-use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\PdoConnection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Store\SqliteTaskStore;
 use Kaly\Tasks\Store\TaskStore;
 use PDO;
@@ -32,7 +32,7 @@ final readonly class SqliteEngine implements Engine
         return $pdo;
     }
 
-    public function store(Connection $connection, string $table): TaskStore
+    public function store(TransactionalConnection $connection, string $table): TaskStore
     {
         return new SqliteTaskStore($connection, $table);
     }

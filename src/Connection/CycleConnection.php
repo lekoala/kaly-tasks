@@ -31,7 +31,7 @@ final readonly class CycleConnection implements TransactionalConnection
     {
         $driver = $this->database->getDriver(DatabaseInterface::WRITE);
         if ($driver->getTransactionLevel() !== 0) {
-            throw new LogicException('Reservation requires a connection without an active transaction');
+            throw new LogicException('Queue transactions require a connection without an active transaction');
         }
         $driver->beginTransaction();
         try {

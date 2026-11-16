@@ -8,7 +8,9 @@ use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\EncodedTask;
+use LogicException;
 use UnexpectedValueException;
 
 /**
@@ -28,7 +30,7 @@ final readonly class PostgresTaskStore implements TaskStore
     private const MAX_TABLE_LENGTH = 55;
 
     public function __construct(
-        private Connection $connection,
+        private TransactionalConnection $connection,
         private string $table = 'kaly_tasks',
     ) {
         if (preg_match('/^(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*$/', $table) !== 1) {
@@ -55,6 +57,7 @@ final readonly class PostgresTaskStore implements TaskStore
                 queue TEXT NOT NULL,
                 name TEXT NOT NULL,
                 payload JSON NOT NULL,
+                chain JSON,
                 dedup_key TEXT,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -75,19 +78,26 @@ final readonly class PostgresTaskStore implements TaskStore
 
     public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
+        return $this->insert($this->connection, $task, $notBefore);
+    }
+
+    private function insert(Connection $connection, EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
+    {
+        $chain = TaskChain::encode($task->chain);
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
         if ($task->deduplicationKey !== null) {
             StoreValues::assertNoNul($task->deduplicationKey, 'The deduplication key');
         }
-        return $this->connection->execute(
-            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, available_at) VALUES (?, ?, CAST(? AS JSON), ?, COALESCE(CAST(? AS TIMESTAMPTZ), now()))
+        return $connection->execute(
+            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, chain, available_at) VALUES (?, ?, CAST(? AS JSON), ?, CAST(? AS JSON), COALESCE(CAST(? AS TIMESTAMPTZ), now()))
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
             [
                 $task->queue,
                 $task->name,
                 $task->payload,
                 $task->deduplicationKey,
+                $chain,
                 $notBefore?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.uP'),
             ],
         ) === 1;
@@ -118,7 +128,7 @@ final readonly class PostgresTaskStore implements TaskStore
             SET status = 'running', owner = ?, attempts = t.attempts + 1,
                 lease_until = now() + CAST(? AS INTEGER) * INTERVAL '1 second'
             FROM next WHERE t.id = next.id
-            RETURNING t.id, t.name, t.queue, CAST(t.payload AS TEXT) AS payload, t.attempts", [...$queues, $owner, $leaseSeconds])[0] ?? null;
+            RETURNING t.id, t.name, t.queue, CAST(t.payload AS TEXT) AS payload, t.attempts, CAST(t.chain AS TEXT) AS chain", [...$queues, $owner, $leaseSeconds])[0] ?? null;
 
         return $row === null ? null : StoreValues::reserved($row, $owner);
     }
@@ -126,9 +136,27 @@ final readonly class PostgresTaskStore implements TaskStore
     public function complete(ReservedTask $task): bool
     {
         StoreValues::assertNoNul($task->owner, 'The owner token');
-        return $this->connection->execute(
+        $chain = TaskChain::decode($task->chain);
+        if ($chain === []) {
+            return $this->finish($this->connection, $task);
+        }
+        return $this->connection->transaction(function (Connection $connection) use ($task, $chain): bool {
+            if (!$this->finish($connection, $task)) {
+                return false;
+            }
+            $next = $chain[0];
+            if (!$this->insert($connection, new EncodedTask($next->name, $next->queue, $next->payload, chain: array_slice($chain, 1)))) {
+                throw new LogicException('The next sequence step could not be inserted');
+            }
+            return true;
+        });
+    }
+
+    private function finish(Connection $connection, ReservedTask $task): bool
+    {
+        return $connection->execute(
             "UPDATE {$this->table}
-            SET status = 'done', owner = NULL, lease_until = NULL, last_error = NULL, finished_at = now()
+            SET status = 'done', chain = NULL, owner = NULL, lease_until = NULL, last_error = NULL, finished_at = now()
             WHERE id = ? AND owner = ? AND status = 'running'",
             [$task->id, $task->owner],
         ) === 1;

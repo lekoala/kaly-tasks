@@ -73,6 +73,7 @@ final class StoreValues
             self::string($row['payload']),
             self::int($row['attempts']),
             $owner,
+            $row['chain'] === null ? null : self::string($row['chain']),
         );
     }
 

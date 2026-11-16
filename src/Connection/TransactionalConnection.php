@@ -11,7 +11,7 @@ interface TransactionalConnection extends Connection
 {
     /**
      * Commits before returning and rolls back on failure. An existing transaction
-     * is refused: reservation locks must be released before a task runs.
+     * is refused: reservations and sequence transitions must commit before returning.
      * The callback must use the supplied connection and must not manage transactions.
      *
      * @template T

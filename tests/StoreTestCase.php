@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests;
 
-use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\PdoConnection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Store\TaskStore;
 use Kaly\Tasks\Tests\Engine\Engine;
 use PDO;
@@ -76,7 +76,7 @@ abstract class StoreTestCase extends TestCase
     /**
      * The connection under test for the store.
      */
-    protected function connection(): Connection
+    protected function connection(): TransactionalConnection
     {
         return new PdoConnection($this->pdo);
     }

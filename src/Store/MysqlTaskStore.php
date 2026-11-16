@@ -10,6 +10,7 @@ use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\EncodedTask;
+use LogicException;
 use PDOException;
 use Throwable;
 use UnexpectedValueException;
@@ -43,6 +44,7 @@ final readonly class MysqlTaskStore implements TaskStore
                 queue VARBINARY(255) NOT NULL,
                 name LONGTEXT NOT NULL,
                 payload LONGTEXT NOT NULL,
+                chain LONGTEXT,
                 dedup_key LONGTEXT,
                 dedup_hash BINARY(32),
                 status VARCHAR(7) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
@@ -63,6 +65,20 @@ final readonly class MysqlTaskStore implements TaskStore
 
     public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
+        return $this->insert($this->connection, $task, $notBefore);
+    }
+
+    private function insert(Connection $connection, EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
+    {
+        $chain = TaskChain::encode($task->chain);
+        if (strlen($task->queue) > 255) {
+            throw new InvalidArgumentException('Queue names must be at most 255 bytes');
+        }
+        foreach ($task->chain as $step) {
+            if (strlen($step->queue) > 255) {
+                throw new InvalidArgumentException('Queue names must be at most 255 bytes');
+            }
+        }
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
         if ($task->deduplicationKey !== null) {
@@ -71,14 +87,15 @@ final readonly class MysqlTaskStore implements TaskStore
         // Length-prefix the name to make the pair unambiguous, with bytewise keys
         $hash = $task->deduplicationKey === null ? null : hash('sha256', strlen($task->name) . ':' . $task->name . $task->deduplicationKey);
         try {
-            return $this->connection->execute(
-                "INSERT INTO `{$this->table}` (queue, name, payload, dedup_key, dedup_hash, available_at) VALUES (?, ?, ?, ?, UNHEX(?), COALESCE(?, UTC_TIMESTAMP(6)))",
+            return $connection->execute(
+                "INSERT INTO `{$this->table}` (queue, name, payload, dedup_key, dedup_hash, chain, available_at) VALUES (?, ?, ?, ?, UNHEX(?), ?, COALESCE(?, UTC_TIMESTAMP(6)))",
                 [
                     $task->queue,
                     $task->name,
                     $task->payload,
                     $task->deduplicationKey,
                     $hash,
+                    $chain,
                     $notBefore?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
                 ],
             ) === 1;
@@ -111,7 +128,7 @@ final readonly class MysqlTaskStore implements TaskStore
         shuffle($queues);
         return $this->connection->transaction(function (Connection $connection) use ($queues, $owner, $leaseSeconds): ?ReservedTask {
             foreach ($queues as $queue) {
-                $row = $connection->fetchAll("SELECT id, name, queue, payload, attempts FROM `{$this->table}` FORCE INDEX (pending)
+                $row = $connection->fetchAll("SELECT id, name, queue, payload, attempts, chain FROM `{$this->table}` FORCE INDEX (pending)
                     WHERE status = 'pending' AND queue = ? AND available_at <= UTC_TIMESTAMP(6)
                     ORDER BY available_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", [$queue])[0] ?? null;
                 if ($row === null) {
@@ -125,7 +142,7 @@ final readonly class MysqlTaskStore implements TaskStore
                     WHERE id = ?",
                     [$owner, $leaseSeconds, $task->id],
                 );
-                return new ReservedTask($task->id, $task->name, $task->queue, $task->payload, $task->attempts + 1, $owner);
+                return new ReservedTask($task->id, $task->name, $task->queue, $task->payload, $task->attempts + 1, $owner, $task->chain);
             }
             return null;
         });
@@ -134,9 +151,27 @@ final readonly class MysqlTaskStore implements TaskStore
     public function complete(ReservedTask $task): bool
     {
         StoreValues::assertNoNul($task->owner, 'The owner token');
-        return $this->connection->execute(
+        $chain = TaskChain::decode($task->chain);
+        if ($chain === []) {
+            return $this->finish($this->connection, $task);
+        }
+        return $this->connection->transaction(function (Connection $connection) use ($task, $chain): bool {
+            if (!$this->finish($connection, $task)) {
+                return false;
+            }
+            $next = $chain[0];
+            if (!$this->insert($connection, new EncodedTask($next->name, $next->queue, $next->payload, chain: array_slice($chain, 1)))) {
+                throw new LogicException('The next sequence step could not be inserted');
+            }
+            return true;
+        });
+    }
+
+    private function finish(Connection $connection, ReservedTask $task): bool
+    {
+        return $connection->execute(
             "UPDATE `{$this->table}`
-            SET status = 'done', owner = NULL, lease_until = NULL, last_error = NULL, finished_at = UTC_TIMESTAMP(6)
+            SET status = 'done', chain = NULL, owner = NULL, lease_until = NULL, last_error = NULL, finished_at = UTC_TIMESTAMP(6)
             WHERE id = ? AND owner = ? AND status = 'running'",
             [$task->id, $task->owner],
         ) === 1;

@@ -16,6 +16,16 @@ class MysqlTaskStoreTest extends TaskStoreTestCase
 {
     use OnMysql;
 
+    public function testRejectsAnOversizedContinuationQueueBeforeInsertingAnything(): void
+    {
+        try {
+            $this->store()->push(new EncodedTask('a', 'default', '{}', chain: [new EncodedTask('b', str_repeat('x', 256), '{}')]));
+            $this->fail('An oversized queue must be rejected before the first step');
+        } catch (InvalidArgumentException) {
+            $this->assertSame(0, $this->countTasks());
+        }
+    }
+
     public function testSchedulingPreservesMicrosecondsInUtcRegardlessOfSessionTimezone(): void
     {
         $this->pdo()->exec("SET time_zone = '+05:00'");
@@ -72,12 +82,22 @@ class MysqlTaskStoreTest extends TaskStoreTestCase
         }
     }
 
+    public function testRejectsAnOversizedFirstQueueBeforeInsertingAnything(): void
+    {
+        try {
+            $this->store()->push(new EncodedTask('a', str_repeat('q', 256), '{}'));
+            $this->fail('An oversized queue must be rejected before insertion');
+        } catch (InvalidArgumentException) {
+            $this->assertSame(0, $this->countTasks());
+        }
+    }
+
     public function testDoesNotSuppressInvalidData(): void
     {
-        $this->pdo()->exec("SET SESSION sql_mode = 'STRICT_ALL_TABLES'");
+        $this->pdo()->exec('ALTER TABLE ' . self::TABLE . " ADD CHECK (name <> 'invalid')");
         $store = new MysqlTaskStore(new PdoConnection($this->pdo()), self::TABLE);
         $this->expectException(PDOException::class);
-        $store->push(new EncodedTask('a', str_repeat('q', 256), '{}'));
+        $store->push(new EncodedTask('invalid', 'default', '{}'));
     }
 
     public function testRejectsUnsafeTableNames(): void

@@ -34,6 +34,8 @@ interface TaskStore
      * immediately eligible; a future date is a lower bound, not an execution promise.
      * Stores normalize dates to UTC and round up when precision is limited.
      * Deduplication never changes an existing task's availability or payload.
+     * The task may carry a flat continuation; only its first step may deduplicate.
+     * Validate the entire continuation before writing anything.
      *
      * @return bool False when a task with the same name and deduplication key is already stored
      */
@@ -41,11 +43,22 @@ interface TaskStore
 
     /**
      * Leases the next available task of the given queues to a new owner.
+     * Return the stored continuation JSON verbatim, without decoding it: the
+     * worker validates it and isolates malformed data as a failed task.
      *
      * @param list<string> $queues
      */
     public function reserve(array $queues, string $owner, int $leaseSeconds): ?ReservedTask;
 
+    /**
+     * Atomically marks the owned task done and inserts its next step with the
+     * remaining continuation, clearing the completed row's chain. A lost owner
+     * changes nothing and returns false. An insertion failure rolls back both
+     * writes and propagates. Ordinary tasks need only the completion update.
+     * Decode ReservedTask::$chain with TaskChain before completing it; malformed
+     * JSON must never be silently discarded. Release, fail, recovery and manual
+     * retry preserve the raw continuation, including malformed JSON.
+     */
     public function complete(ReservedTask $task): bool;
 
     /**

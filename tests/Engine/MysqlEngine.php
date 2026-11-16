@@ -10,14 +10,12 @@ use Cycle\Database\Config\MySQL\TcpConnectionConfig;
 use Cycle\Database\Config\MySQLDriverConfig;
 use Cycle\Database\DatabaseManager;
 use Doctrine\DBAL\DriverManager;
-use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\CycleConnection;
 use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\Connection\PdoConnection;
 use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Store\MysqlTaskStore;
 use Kaly\Tasks\Store\TaskStore;
-use LogicException;
 use PDO;
 
 /**
@@ -44,11 +42,8 @@ final readonly class MysqlEngine implements Engine
         return new PDO($this->dsn, $parts['user'], $parts['password'], [PDO::ATTR_EMULATE_PREPARES => false]);
     }
 
-    public function store(Connection $connection, string $table): TaskStore
+    public function store(TransactionalConnection $connection, string $table): TaskStore
     {
-        if (!$connection instanceof TransactionalConnection) {
-            throw new LogicException('MySQL requires a transactional connection');
-        }
         return new MysqlTaskStore($connection, $table);
     }
 

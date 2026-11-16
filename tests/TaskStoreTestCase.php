@@ -19,6 +19,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
  */
 abstract class TaskStoreTestCase extends StoreTestCase
 {
+    use SequenceStoreTests;
+
     private function reserve(string $queue = 'default', string $owner = 'owner-a'): ?ReservedTask
     {
         return $this->store()->reserve([$queue], $owner, 60);

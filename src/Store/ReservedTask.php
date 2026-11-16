@@ -9,6 +9,7 @@ namespace Kaly\Tasks\Store;
  */
 final readonly class ReservedTask
 {
+    /** @param string|null $chain Raw continuation JSON, validated by the worker before invocation */
     public function __construct(
         public int $id,
         public string $name,
@@ -16,5 +17,6 @@ final readonly class ReservedTask
         public string $payload,
         public int $attempts,
         public string $owner,
+        public ?string $chain = null,
     ) {}
 }

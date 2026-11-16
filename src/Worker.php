@@ -6,6 +6,7 @@ namespace Kaly\Tasks;
 
 use Closure;
 use Kaly\Tasks\Store\ReservedTask;
+use Kaly\Tasks\Store\TaskChain;
 use Kaly\Tasks\Store\TaskStore;
 use LogicException;
 use Psr\Log\LoggerInterface;
@@ -167,6 +168,8 @@ final class Worker
         try {
             // The constructor runs under the timeout too
             try {
+                // Keep malformed continuation data on the failed row, without invoking it.
+                TaskChain::decode($reserved->chain);
                 $task = $this->registry->decode($reserved->name, $reserved->payload);
             } catch (Throwable $e) {
                 $this->log('error', 'Task {task} #{id} cannot be decoded: {error}', $context + ['error' => $e->getMessage()]);

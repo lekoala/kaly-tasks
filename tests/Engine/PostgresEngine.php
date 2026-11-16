@@ -10,10 +10,10 @@ use Cycle\Database\Config\Postgres\TcpConnectionConfig;
 use Cycle\Database\Config\PostgresDriverConfig;
 use Cycle\Database\DatabaseManager;
 use Doctrine\DBAL\DriverManager;
-use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\CycleConnection;
 use Kaly\Tasks\Connection\DoctrineConnection;
 use Kaly\Tasks\Connection\PdoConnection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\Store\TaskStore;
 use PDO;
@@ -41,7 +41,7 @@ final readonly class PostgresEngine implements Engine
         return new PDO($this->dsn);
     }
 
-    public function store(Connection $connection, string $table): TaskStore
+    public function store(TransactionalConnection $connection, string $table): TaskStore
     {
         return new PostgresTaskStore($connection, $table);
     }
@@ -68,7 +68,7 @@ final readonly class PostgresEngine implements Engine
     public function cleanUp(): void {}
 
     /**
-     * @return array{connection:Connection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
+     * @return array{connection:TransactionalConnection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
      */
     public function viaPdo(): array
     {
@@ -82,7 +82,7 @@ final readonly class PostgresEngine implements Engine
     }
 
     /**
-     * @return array{connection:Connection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
+     * @return array{connection:TransactionalConnection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
      */
     public function viaDoctrine(): array
     {
@@ -96,7 +96,7 @@ final readonly class PostgresEngine implements Engine
     }
 
     /**
-     * @return array{connection:Connection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
+     * @return array{connection:TransactionalConnection,begin:Closure():mixed,commit:Closure():mixed,rollback:Closure():mixed}
      */
     public function viaCycle(): array
     {

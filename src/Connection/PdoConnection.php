@@ -36,15 +36,15 @@ final readonly class PdoConnection implements TransactionalConnection
     {
         $pdo = $this->pdo instanceof PDO ? $this->pdo : ($this->pdo)();
         if ($pdo->inTransaction()) {
-            throw new LogicException('Reservation requires a connection without an active transaction');
+            throw new LogicException('Queue transactions require a connection without an active transaction');
         }
         if (!$pdo->beginTransaction()) {
-            throw new RuntimeException('Could not begin reservation transaction');
+            throw new RuntimeException('Could not begin queue transaction');
         }
         try {
             $result = $callback(new self($pdo));
             if (!$pdo->commit()) {
-                throw new RuntimeException('Could not commit reservation transaction');
+                throw new RuntimeException('Could not commit queue transaction');
             }
             return $result;
         } catch (Throwable $error) {

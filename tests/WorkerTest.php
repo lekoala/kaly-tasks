@@ -23,12 +23,29 @@ use Kaly\Tasks\Tests\Fixtures\ThrowingLogger;
 use Kaly\Tasks\Worker;
 use Kaly\Tasks\WorkerOptions;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\DataProviderExternal;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 final class WorkerTest extends TestCase
 {
+    #[DataProviderExternal(TaskChainTest::class, 'malformedChains')]
+    public function testMalformedContinuationIsFailedBeforePayloadDecodingOrInvocation(string $chain): void
+    {
+        // An invalid payload proves that the continuation is checked first.
+        $reserved = new ReservedTask(1, 'test.record', 'default', '{', 1, 'owner', $chain);
+        $store = $this->createMock(TaskStore::class);
+        $store->expects($this->once())->method('recover')->willReturn(0);
+        $store->expects($this->once())->method('reserve')->willReturn($reserved);
+        $store->expects($this->once())->method('fail')->with($reserved, $this->stringContains('continuation'))->willReturn(true);
+        $store->expects($this->never())->method('complete');
+        $store->expects($this->never())->method('release');
+        $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
+        $worker = new Worker($store, $registry, static fn(object $task) => throw new RuntimeException('Invalid task was invoked'));
+        $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1)));
+    }
+
     /**
      * @return iterable<string,array{string,string,int,string}>
      */

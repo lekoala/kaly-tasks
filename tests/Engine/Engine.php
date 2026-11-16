@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kaly\Tasks\Tests\Engine;
 
-use Kaly\Tasks\Connection\Connection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Store\TaskStore;
 use PDO;
 
@@ -19,7 +19,7 @@ interface Engine
      */
     public function connect(): PDO;
 
-    public function store(Connection $connection, string $table): TaskStore;
+    public function store(TransactionalConnection $connection, string $table): TaskStore;
 
     /**
      * Drops and creates the task table.

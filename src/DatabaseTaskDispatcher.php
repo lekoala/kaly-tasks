@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kaly\Tasks;
 
 use DateTimeImmutable;
+use InvalidArgumentException;
 use Kaly\Task\ScheduledTaskDispatcher;
 use Kaly\Tasks\Store\TaskStore;
 
@@ -24,7 +25,7 @@ use Kaly\Tasks\Store\TaskStore;
  * key prevents duplicate stored tasks while that key is retained; it does not
  * guarantee exactly-once external effects.
  */
-final readonly class DatabaseTaskDispatcher implements ScheduledTaskDispatcher
+final readonly class DatabaseTaskDispatcher implements ScheduledTaskDispatcher, TaskSequenceDispatcher
 {
     public function __construct(
         private TaskStore $store,
@@ -34,5 +35,26 @@ final readonly class DatabaseTaskDispatcher implements ScheduledTaskDispatcher
     public function dispatch(object $task, ?DateTimeImmutable $notBefore = null): void
     {
         $this->store->push($this->registry->encode($task), $notBefore);
+    }
+
+    /** @param non-empty-list<object> $tasks */
+    public function sequence(array $tasks, ?DateTimeImmutable $notBefore = null): bool
+    {
+        if ($tasks === [] || !array_is_list($tasks)) {
+            throw new InvalidArgumentException('A task sequence must be a non-empty list');
+        }
+        $encoded = [];
+        foreach ($tasks as $position => $task) {
+            $step = $this->registry->encode($task);
+            if ($position > 0 && $step->deduplicationKey !== null) {
+                throw new InvalidArgumentException('Only the first task in a sequence may deduplicate');
+            }
+            $encoded[] = $step;
+        }
+        $first = array_shift($encoded);
+        return $this->store->push(
+            new EncodedTask($first->name, $first->queue, $first->payload, $first->deduplicationKey, $encoded),
+            $notBefore,
+        );
     }
 }

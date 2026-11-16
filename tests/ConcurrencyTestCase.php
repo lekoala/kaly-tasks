@@ -52,6 +52,27 @@ abstract class ConcurrencyTestCase extends StoreTestCase
         $this->assertSame(10, $this->countTasks('pending'));
     }
 
+    public function testConcurrentWorkersDrainSequencesWithoutDuplicateSteps(): void
+    {
+        $this->pdo()->exec('DROP TABLE IF EXISTS kaly_tasks_log');
+        $this->pdo()->exec('CREATE TABLE kaly_tasks_log (number INTEGER NOT NULL, pid INTEGER NOT NULL)');
+        try {
+            $tasks = new DatabaseTaskDispatcher($this->store(), (new TaskRegistry())->register('test.log', LogTask::class));
+            for ($i = 0; $i < 30; $i++) {
+                $tasks->sequence([new LogTask($i * 3), new LogTask(($i * 3) + 1), new LogTask(($i * 3) + 2)]);
+            }
+            $processed = $this->runWorkers();
+            $stats = (new PdoConnection($this->pdo()))->fetchAll(
+                'SELECT COUNT(*) AS runs, COUNT(DISTINCT number) AS steps FROM kaly_tasks_log',
+            )[0];
+            $this->assertSame(90, array_sum($processed));
+            $this->assertSame([90, 90], [$stats['runs'], $stats['steps']]);
+            $this->assertSame(90, $this->countTasks('done'));
+        } finally {
+            $this->pdo()->exec('DROP TABLE kaly_tasks_log');
+        }
+    }
+
     /**
      * Starts the workers together at a barrier: a fast first worker cannot
      * drain the table before the others have started.

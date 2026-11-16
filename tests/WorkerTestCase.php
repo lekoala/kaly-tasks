@@ -171,6 +171,78 @@ abstract class WorkerTestCase extends StoreTestCase
         $this->assertSame(2, $this->countTasks('done'));
     }
 
+    public function testSequenceResumesInAnotherWorkerAndQueue(): void
+    {
+        $this->tasks->sequence([new RecordTask('a'), new UrgentRecordTask('b'), new RecordTask('c')]);
+        $this->assertSame(1, $this->work());
+        $this->assertSame(['a'], $this->journal->entries);
+        $this->assertSame(1, $this->countTasks('pending'));
+        $next = new Worker($this->store(), $this->registry, fn(object $task) => $task($this->journal));
+        $this->assertSame(1, $next->run(new WorkerOptions(queues: ['urgent'], timeout: 0, stopWhenEmpty: true)));
+        $this->assertSame(1, $this->work());
+        $this->assertSame(['a', 'b', 'c'], $this->journal->entries);
+        $this->assertSame(3, $this->countTasks('done'));
+    }
+
+    public function testSequenceFailureRetriesOnlyTheCurrentStepAndKeepsTheRest(): void
+    {
+        $this->tasks->sequence([new RecordTask('a'), new RecordTask('fail-me'), new RecordTask('c')]);
+        $this->assertSame(3, $this->work());
+        $this->assertSame(['a'], $this->journal->entries);
+        $failed = $this->store()->failed()[0];
+        $this->assertSame(2, $failed['attempts']);
+        $this->assertNotNull($this->row($failed['id'])['chain']);
+        // Simulate the application repair that makes the failed operation succeed.
+        $this->pdo()->exec('UPDATE ' . self::TABLE . " SET payload = '{\"entry\":\"b\"}' WHERE status = 'failed'");
+        $this->assertTrue($this->store()->retryFailed($failed['id']));
+        $this->assertSame(2, $this->work());
+        $this->assertSame(['a', 'b', 'c'], $this->journal->entries);
+    }
+
+    public function testSequenceDecodeFailurePreservesItsContinuation(): void
+    {
+        $this->store()->push(new EncodedTask('unknown', 'default', '{}', chain: [$this->registry->encode(new RecordTask('b'))]));
+        $this->assertSame(1, $this->work());
+        $this->assertSame(1, $this->countTasks('failed'));
+        $this->assertSame([], $this->journal->entries);
+        $this->assertNotNull($this->row(1)['chain']);
+    }
+
+    public function testMalformedContinuationFailsOnlyItsTaskAndCanBeRepaired(): void
+    {
+        $this->tasks->sequence([new RecordTask('a'), new RecordTask('b')]);
+        $original = $this->row(1)['chain'];
+        $this->assertIsString($original);
+        $this->pdo()->exec('UPDATE ' . self::TABLE . " SET chain = '[{}]'");
+        $this->tasks->dispatch(new RecordTask('other'));
+        $this->assertSame(2, $this->work());
+        $this->assertSame(['other'], $this->journal->entries, 'The malformed task must not run or block unrelated work');
+        $failed = $this->store()->failed()[0];
+        $this->assertSame(1, $failed['id']);
+        $this->assertSame(1, $failed['attempts']);
+        $this->assertStringContainsString('continuation', $failed['error'] ?? '');
+        $this->assertSame('[{}]', $this->row(1)['chain']);
+        $this->assertTrue($this->store()->retryFailed(1));
+        $this->assertSame(1, $this->work());
+        $this->assertSame(['other'], $this->journal->entries);
+        $repair = $this->pdo()->prepare('UPDATE ' . self::TABLE . ' SET chain = ? WHERE id = 1');
+        $this->assertNotFalse($repair);
+        $repair->execute([$original]);
+        $this->assertTrue($this->store()->retryFailed(1));
+        $this->assertSame(2, $this->work());
+        $this->assertSame(['other', 'a', 'b'], $this->journal->entries);
+        $this->assertSame([], $this->store()->failed());
+    }
+
+    public function testSequenceDoesNotAdvanceAfterLosingItsLease(): void
+    {
+        $this->tasks->sequence([new StealLeaseTask(self::TABLE), new RecordTask('b')]);
+        $this->assertSame(1, $this->work());
+        $this->assertSame(1, $this->countTasks('running'));
+        $this->assertSame(1, $this->countTasks());
+        $this->assertSame([], $this->journal->entries);
+    }
+
     public function testWorkerSkipsScheduledTasksUntilTheyAreDue(): void
     {
         $this->tasks->dispatch(new RecordTask('scheduled'), notBefore: new DateTimeImmutable('+1 hour'));

@@ -8,8 +8,8 @@ use Doctrine\DBAL\Configuration;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Logging\Middleware;
 use InvalidArgumentException;
-use Kaly\Tasks\Connection\Connection;
 use Kaly\Tasks\Connection\DoctrineConnection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\Tests\Engine\SqliteEngine;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use Psr\Log\NullLogger;
@@ -20,7 +20,7 @@ use Psr\Log\NullLogger;
  */
 final class DoctrineSqliteTaskStoreTest extends SqliteTaskStoreTest
 {
-    protected function connection(): Connection
+    protected function connection(): TransactionalConnection
     {
         return new DoctrineConnection(DriverManager::getConnection(['driver' => 'pdo_sqlite', 'path' => $this->sqlite()->path]));
     }

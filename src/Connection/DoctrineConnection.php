@@ -49,7 +49,7 @@ final readonly class DoctrineConnection implements TransactionalConnection
         }
         $this->assertNotSqlite3();
         if ($this->connection->isTransactionActive()) {
-            throw new LogicException('Reservation requires a connection without an active transaction');
+            throw new LogicException('Queue transactions require a connection without an active transaction');
         }
         $this->connection->beginTransaction();
         try {

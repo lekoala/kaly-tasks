@@ -7,7 +7,9 @@ namespace Kaly\Tasks\Store;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Kaly\Tasks\Connection\Connection;
+use Kaly\Tasks\Connection\TransactionalConnection;
 use Kaly\Tasks\EncodedTask;
+use LogicException;
 use UnexpectedValueException;
 
 /**
@@ -30,7 +32,7 @@ use UnexpectedValueException;
 final readonly class SqliteTaskStore implements TaskStore
 {
     public function __construct(
-        private Connection $connection,
+        private TransactionalConnection $connection,
         private string $table = 'kaly_tasks',
     ) {
         if (preg_match('/^[a-z_][a-z0-9_]*$/', $table) !== 1) {
@@ -53,6 +55,7 @@ final readonly class SqliteTaskStore implements TaskStore
                 queue TEXT NOT NULL,
                 name TEXT NOT NULL,
                 payload TEXT NOT NULL,
+                chain TEXT,
                 dedup_key TEXT,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -73,6 +76,12 @@ final readonly class SqliteTaskStore implements TaskStore
 
     public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
+        return $this->insert($this->connection, $task, $notBefore);
+    }
+
+    private function insert(Connection $connection, EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
+    {
+        $chain = TaskChain::encode($task->chain);
         StoreValues::assertNoNul($task->name, 'The task name');
         StoreValues::assertNoNul($task->queue, 'The queue name');
         if ($task->deduplicationKey !== null) {
@@ -80,10 +89,10 @@ final readonly class SqliteTaskStore implements TaskStore
         }
         // The schema and SQL clock use whole seconds: round up, never execute early
         $availableAt = $notBefore === null ? null : $notBefore->getTimestamp() + ($notBefore->format('u') === '000000' ? 0 : 1);
-        return $this->connection->execute(
-            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, available_at) VALUES (?, ?, ?, ?, COALESCE(?, unixepoch()))
+        return $connection->execute(
+            "INSERT INTO {$this->table} (queue, name, payload, dedup_key, chain, available_at) VALUES (?, ?, ?, ?, ?, COALESCE(?, unixepoch()))
             ON CONFLICT (name, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING",
-            [$task->queue, $task->name, $task->payload, $task->deduplicationKey, $availableAt],
+            [$task->queue, $task->name, $task->payload, $task->deduplicationKey, $chain, $availableAt],
         ) === 1;
     }
 
@@ -111,7 +120,7 @@ final readonly class SqliteTaskStore implements TaskStore
                 ORDER BY available_at, id
                 LIMIT 1
             )
-            RETURNING id, name, queue, payload, attempts", [$owner, $leaseSeconds, ...$queues])[0] ?? null;
+            RETURNING id, name, queue, payload, attempts, chain", [$owner, $leaseSeconds, ...$queues])[0] ?? null;
 
         return $row === null ? null : StoreValues::reserved($row, $owner);
     }
@@ -119,9 +128,27 @@ final readonly class SqliteTaskStore implements TaskStore
     public function complete(ReservedTask $task): bool
     {
         StoreValues::assertNoNul($task->owner, 'The owner token');
-        return $this->connection->execute(
+        $chain = TaskChain::decode($task->chain);
+        if ($chain === []) {
+            return $this->finish($this->connection, $task);
+        }
+        return $this->connection->transaction(function (Connection $connection) use ($task, $chain): bool {
+            if (!$this->finish($connection, $task)) {
+                return false;
+            }
+            $next = $chain[0];
+            if (!$this->insert($connection, new EncodedTask($next->name, $next->queue, $next->payload, chain: array_slice($chain, 1)))) {
+                throw new LogicException('The next sequence step could not be inserted');
+            }
+            return true;
+        });
+    }
+
+    private function finish(Connection $connection, ReservedTask $task): bool
+    {
+        return $connection->execute(
             "UPDATE {$this->table}
-            SET status = 'done', owner = NULL, lease_until = NULL, last_error = NULL, finished_at = unixepoch()
+            SET status = 'done', chain = NULL, owner = NULL, lease_until = NULL, last_error = NULL, finished_at = unixepoch()
             WHERE id = ? AND owner = ? AND status = 'running'",
             [$task->id, $task->owner],
         ) === 1;

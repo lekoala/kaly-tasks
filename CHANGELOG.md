@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+- Add `TaskSequenceDispatcher::sequence([...], notBefore: ...)`, implemented by
+  `DatabaseTaskDispatcher`, for durable linear sequences on PostgreSQL, SQLite
+  and MySQL. Every step is encoded before insertion; the deadline applies to the
+  first step. Each successor keeps its queue and starts with fresh attempts.
+  Returns `true` for a new insertion or `false` for a deduplicated submission,
+  subject to the application's transaction commit.
+- **Breaking:** all three stores require a nullable `chain` column, including
+  for ordinary tasks. Add `chain JSON` on PostgreSQL, `chain TEXT` on SQLite or
+  `chain LONGTEXT` on MySQL; `schema()` only creates new tables. Migrate first,
+  upgrade every worker, then enable sequence producers. Old workers can discard
+  continuations. Existing rows with `chain = NULL` need no payload migration.
+- **Breaking:** PostgreSQL and SQLite stores now require `TransactionalConnection`,
+  as MySQL already did. PDO, Doctrine and Cycle adapters already implement it;
+  custom connections must implement the pinned, top-level transaction callback.
+- **Breaking:** `TaskStore::complete()` must atomically finish the owned step
+  and insert its successor, clearing the completed row's continuation. Custom
+  stores must persist the flat list in `EncodedTask::$chain` and return its raw
+  JSON in `ReservedTask::$chain`, without decoding during reservation. The public
+  `Kaly\Tasks\Store\TaskChain` codec encodes and decodes continuations. Steps
+  cannot carry deduplication keys or nested continuations.
+- Only the first sequence step may deduplicate; its retained key skips the
+  entire new submission without replacing the original continuation. The key is
+  freed when that first row is purged, even if successors remain active. Later
+  deduplicated steps are rejected by the dispatcher before calling the store,
+  and by SQL stores for direct insertions.
+- Retries, expired-lease recovery and terminal failures retain continuations.
+  `retryFailed()` resumes the failed step; deleting or purging it abandons the
+  remaining sequence. Business effects still require idempotence.
+- The worker validates continuation JSON before invoking the current task.
+  Malformed data fails that task without blocking unrelated work, preserving
+  the raw JSON for repair before manual retry. Direct completion also rejects
+  malformed continuations. Storage and settlement errors still stop the worker.
+- MySQL rejects queue names exceeding 255 bytes before insertion, for the first
+  step as well as continuations, independently of the SQL strict mode.
+
 ## 0.6.0 - 2026-11-14
 
 - **Breaking:** depend on `lekoala/kaly-contracts` `^1.0` instead of

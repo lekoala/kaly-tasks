@@ -153,6 +153,119 @@ This prevents duplicate insertions, not missed or repeated occurrences:
 For an effect that must happen once per period, such as billing, keep a
 business constraint (a unique row per period) and check it in the task.
 
+## Sequences
+
+Submit a linear sequence without coupling each task to its successor:
+
+```php
+$tasks->sequence([
+    new PrepareConversation($id),
+    new GenerateAnswer($id),
+    new PublishAnswer($id),
+], notBefore: $at);
+```
+
+`DatabaseTaskDispatcher` implements `Kaly\Tasks\TaskSequenceDispatcher`, a
+capability local to this package. Bind that interface to the same dispatcher
+instance when a service needs sequences; `kaly-contracts` remains unchanged.
+There is no builder or final `dispatch()` call: `sequence()` writes the first
+task and its continuation, subject to the application's transaction. It returns
+`true` for a new insertion and `false` when the first step's deduplication key is
+already stored. A `true` result inside an application transaction still needs
+that transaction to commit. A thrown error may leave the insertion outcome
+uncertain, just like `dispatch()`.
+
+- Pass a non-empty list of registered task objects. One task is equivalent to
+  an ordinary dispatch. Every step is encoded and validated before any insertion.
+- `notBefore` applies to the first step only. After each successful completion,
+  the next step becomes eligible immediately, using the database clock.
+- Each step has its own queue and a fresh attempt count. Its retry policy is
+  resolved from the worker's registry when it runs. A worker must poll that queue
+  for the sequence to progress.
+- Future steps are a flat JSON continuation in the current task row's nullable
+  `chain` column; they have no rows yet. Completing a step and inserting
+  the next are one transaction, guarded by the current owner token. An old owner
+  changes nothing. A database failure rolls back both writes and stops the worker;
+  after an uncertain commit, the database may already have advanced the sequence.
+- Retries and lease recovery preserve the continuation. A terminal failure keeps
+  it on the failed row. `retryFailed()` resumes that step with fresh attempts;
+  `deleteFailed()` or purging that failed row abandons the remaining steps.
+- Reservations carry the raw continuation JSON. Before invoking the current
+  task, the worker validates it. A malformed continuation fails only that task,
+  without invoking it or blocking unrelated work. The original JSON stays on the
+  failed row for inspection and repair through an application migration or SQL.
+  Repair it before calling `retryFailed()`; retrying unchanged data fails again.
+  `complete()` also rejects malformed continuations for callers using the store
+  directly. Storage and settlement failures still stop the worker.
+- A completed row no longer keeps its continuation. Statistics count task rows,
+  not future steps; there is no sequence history or global sequence status.
+
+Only the first step may have a deduplication key. A conflict skips the whole new
+submission, preserving the original continuation even if the new steps differ.
+That protection lasts until the first row is deleted or purged, **even if later
+steps are still running**. Use a distinct business execution ID when needed.
+`sequence()` rejects deduplicated task types in later positions before calling
+the store. SQL stores also reject keys on continuation steps passed directly to
+`push()`.
+
+Tasks keep their results in durable application state identified by their
+payloads. Task return values are ignored. Delivery is still at least once: the atomic
+queue transition does not include business writes or external API calls, so task
+effects must be idempotent. Branches, parallel steps, compensation and an
+`onFailure` callback are outside this API.
+
+Use sequences for short chains that benefit from independent retries or reusable
+steps. Each transition rewrites the remaining list, so the cumulative continuation
+data written grows quadratically with the number of equally sized steps. The
+number of task insertions remains linear.
+
+### Custom stores and the continuation codec
+
+`Kaly\Tasks\Store\TaskChain` is a public storage codec:
+
+```php
+$json = TaskChain::encode($encodedTask->chain); // string, or null for no continuation
+$remaining = TaskChain::decode($json);         // list<EncodedTask>
+```
+
+It stores a flat JSON list of objects containing `name`, `queue` and `payload`
+strings. Payload text is preserved verbatim. Encoding rejects invalid steps,
+keys and nested continuations with `InvalidArgumentException`; decoding malformed
+stored data throws `UnexpectedValueException`.
+
+A custom `TaskStore` validates and encodes `EncodedTask::$chain` before insertion,
+then returns that raw JSON in `ReservedTask::$chain` without decoding at reservation.
+This lets the worker isolate malformed continuations using the normal failed-task
+path. Completion decodes it with the same codec and atomically transfers the
+remaining steps to the successor, clearing the completed row. Other settlement
+and recovery operations preserve the raw value unchanged. A custom backend may
+choose its own persistence representation, but must return this JSON format in
+the reservation.
+
+### Upgrading an existing queue for sequences
+
+All three stores require the new column, including for ordinary dispatches and
+reservations. `schema()` creates new tables; it does not migrate existing ones.
+Add the nullable column through your application's migrations, adapting the table
+name as needed:
+
+```sql
+-- PostgreSQL
+ALTER TABLE kaly_tasks ADD COLUMN chain JSON;
+
+-- SQLite
+ALTER TABLE kaly_tasks ADD COLUMN chain TEXT;
+
+-- MySQL / Aurora MySQL
+ALTER TABLE kaly_tasks ADD COLUMN chain LONGTEXT;
+```
+
+Existing rows have `chain = NULL` and remain ordinary tasks. Add the column
+first, replace **all workers**, then enable sequence submissions. An old worker
+can mark a step done without inserting its continuation. Keep sequence producers
+disabled during the worker rollout; do not roll back to old workers while any
+continuations remain. No new indexes or statuses are needed.
+
 ## Guarantees
 
 - **At least once.** A task runs until it succeeds, fails for good, or exceeds
@@ -256,7 +369,8 @@ connection settings to you:
 
 ## Connections
 
-The base store connection needs two operations, behind `Kaly\Tasks\Connection\Connection`:
+All SQL stores require `Kaly\Tasks\Connection\TransactionalConnection`, which
+extends the two statement operations of `Connection` with a transaction callback:
 
 | Library | Connection |
 |---|---|
@@ -268,11 +382,14 @@ Statements run on the given connection, inside its current transaction. An
 EntityManager or a Cycle unit of work opened per operation does not matter: the
 transaction belongs to the shared connection.
 
-MySQL also requires `TransactionalConnection`, implemented by all three adapters.
+`TransactionalConnection` is implemented by all three adapters.
 Its `transaction()` callback receives a connection pinned to the primary for the
 whole transaction, commits before returning and rolls back on failure. Existing
-transactions are refused: a reservation must release its locks before executing
-the task. Dispatch still joins an existing application transaction normally.
+transactions are refused for this callback: MySQL reservation must release its
+locks before executing the task, and a sequence completion must commit its
+transition before returning. Tasks must close their own transactions before
+returning to the worker. Dispatch and sequence submission still join an existing
+application transaction normally.
 
 ## MySQL and Aurora
 
@@ -322,7 +439,7 @@ foreach ($store->schema() as $statement) {
 `PostgresTaskStore` takes a table name, optionally schema-qualified
 (`queue.tasks`). `SqliteTaskStore` takes a plain table name.
 
-Register task types and bind both contracts to the same dispatcher instance:
+Register task types and bind the required contracts to the same dispatcher instance:
 
 ```php
 use Kaly\Task\ScheduledTaskDispatcher;
@@ -332,6 +449,7 @@ use Kaly\Tasks\DatabaseTaskDispatcher;
 use Kaly\Tasks\RetryPolicy;
 use Kaly\Tasks\Store\PostgresTaskStore;
 use Kaly\Tasks\TaskRegistry;
+use Kaly\Tasks\TaskSequenceDispatcher;
 
 $app->configure(fn(Definitions $di) => $di
     ->set(TaskRegistry::class, static fn() => (new TaskRegistry())
@@ -345,7 +463,8 @@ $app->configure(fn(Definitions $di) => $di
         new PostgresTaskStore(new DoctrineConnection($c->get(EntityManagerInterface::class)->getConnection())),
         $c->get(TaskRegistry::class),
     ))
-    ->alias(TaskDispatcher::class, ScheduledTaskDispatcher::class));
+    ->alias(TaskDispatcher::class, ScheduledTaskDispatcher::class)
+    ->alias(TaskSequenceDispatcher::class, ScheduledTaskDispatcher::class));
 ```
 
 A persistable task has only public promoted constructor parameters, typed
@@ -362,7 +481,7 @@ stored: see [Deploying task changes](#deploying-task-changes).
 skipped an insertion, use `$store->push($registry->encode($task))`: it returns
 `true` for a new task and `false` for an existing key.
 
-Both stores reject NUL bytes (`\0`) in task names, queue names, deduplication
+All stores reject NUL bytes (`\0`) in task names, queue names, deduplication
 keys and owner tokens with `InvalidArgumentException` before executing SQL.
 This prevents PostgreSQL text parameters from being silently truncated,
 changing routing or treating distinct tasks as duplicates. NUL characters in
@@ -578,7 +697,9 @@ worker does not know fails for good, without retry.
   producer dispatches the new one, and keep the old name until its tasks are
   drained.
 - Drained includes tasks scheduled for later, retries waiting for their delay,
-  and failed tasks you may still `retryFailed()`.
+  future steps stored in continuations, and failed tasks you may still
+  `retryFailed()`. A continuation's queue and payload were encoded at submission;
+  changing a registry entry does not rewrite stored steps.
 - When workers and producers cannot be deployed in order, isolate the versions
   in separate queues: new producers dispatch to a queue only new workers poll.
 
