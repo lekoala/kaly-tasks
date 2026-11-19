@@ -76,6 +76,113 @@ final readonly class PostgresTaskStore implements TaskStore
         ];
     }
 
+    /**
+     * The opt-in DDL that notifies listeners when a task becomes available.
+     *
+     * It changes no table or index: run it through migrations after `schema()`.
+     * The function is created in the table's schema when the table is
+     * schema-qualified. Dropping the trigger restores plain polling.
+     *
+     * The trigger calls `pg_notify()`, which cannot run in a prepared
+     * transaction: `PREPARE TRANSACTION` fails for a transaction that inserted,
+     * released, recovered or retried a task. Do not install it with two-phase
+     * commit (XA), or enqueue outside the prepared transaction.
+     *
+     * @return list<string>
+     */
+    public function notificationSchema(): array
+    {
+        $function = $this->notifyFunction();
+        $channel = $this->notificationChannel();
+        return [
+            "CREATE OR REPLACE FUNCTION {$function}() RETURNS trigger LANGUAGE plpgsql AS \$\$
+            BEGIN
+                IF NEW.status = 'pending' AND (
+                    TG_OP = 'INSERT'
+                    OR OLD.status IS DISTINCT FROM 'pending'
+                    OR OLD.available_at IS DISTINCT FROM NEW.available_at
+                    OR OLD.queue IS DISTINCT FROM NEW.queue
+                ) THEN
+                    PERFORM pg_notify('{$channel}', '');
+                END IF;
+                RETURN NULL;
+            END
+            \$\$",
+            "DROP TRIGGER IF EXISTS {$this->notifyTrigger()} ON {$this->table}",
+            "CREATE TRIGGER {$this->notifyTrigger()} AFTER INSERT OR UPDATE ON {$this->table}
+            FOR EACH ROW EXECUTE FUNCTION {$function}()",
+        ];
+    }
+
+    /**
+     * The DDL that removes `notificationSchema()`.
+     *
+     * @return list<string>
+     */
+    public function dropNotificationSchema(): array
+    {
+        return [
+            "DROP TRIGGER IF EXISTS {$this->notifyTrigger()} ON {$this->table}",
+            "DROP FUNCTION IF EXISTS {$this->notifyFunction()}()",
+        ];
+    }
+
+    /**
+     * The channel `PostgresNotifyWaiter` listens on. It hashes the table name
+     * so `schema.table` and `schema_table` never collide, and so two
+     * applications sharing a database do not wake each other.
+     */
+    public function notificationChannel(): string
+    {
+        // 11 + 40 + 6 = 57 bytes, within the 63 byte identifier limit
+        return 'kaly_tasks_' . substr(hash('sha256', $this->table), 0, 40) . '_ready';
+    }
+
+    /**
+     * Whether `notificationSchema()` is currently installed on the table.
+     */
+    public function notificationsEnabled(): bool
+    {
+        $row = $this->connection->fetchAll('SELECT CAST(EXISTS (
+                SELECT 1 FROM pg_trigger t
+                JOIN pg_class c ON c.oid = t.tgrelid
+                WHERE t.tgname = ? AND c.oid = to_regclass(?)
+            ) AS TEXT) AS enabled', [$this->notifyTrigger(), $this->table])[0] ?? null;
+        return ($row['enabled'] ?? null) === 'true';
+    }
+
+    /**
+     * Milliseconds until the earliest pending task of these queues, relative to
+     * the database clock. Null when none is pending; zero or less means work is
+     * due. This bound keeps a deferred task from waiting for the fallback.
+     *
+     * @param list<string> $queues
+     */
+    public function nextDueInMs(array $queues): ?int
+    {
+        if ($queues === []) {
+            throw new InvalidArgumentException('Next due needs at least one queue');
+        }
+        if (in_array('', $queues, true)) {
+            throw new InvalidArgumentException('Next due queue names cannot be empty');
+        }
+        foreach ($queues as $queue) {
+            StoreValues::assertNoNul($queue, 'The queue name');
+        }
+        $placeholders = implode(', ', array_fill(0, count($queues), '?'));
+        $row = $this->connection->fetchAll("SELECT CEIL(EXTRACT(EPOCH FROM (MIN(available_at) - now())) * 1000)::BIGINT AS ms
+            FROM {$this->table}
+            WHERE status = 'pending' AND queue IN ({$placeholders})", $queues)[0] ?? null;
+        $value = $row['ms'] ?? null;
+        if ($value === null) {
+            return null;
+        }
+        if (!is_int($value) && !(is_string($value) && is_numeric($value))) {
+            throw new UnexpectedValueException('Expected an integer column, got ' . get_debug_type($value));
+        }
+        return (int) $value;
+    }
+
     public function push(EncodedTask $task, ?DateTimeImmutable $notBefore = null): bool
     {
         return $this->insert($this->connection, $task, $notBefore);
@@ -250,5 +357,20 @@ final readonly class PostgresTaskStore implements TaskStore
                 WHERE status = 'failed' AND finished_at < now() - CAST(? AS INTEGER) * INTERVAL '1 second'", [$failedOlderThanSeconds]);
         }
         return $deleted;
+    }
+
+    private function notifyTrigger(): string
+    {
+        $dot = strpos($this->table, '.');
+        return ($dot === false ? $this->table : substr($this->table, $dot + 1)) . '_notify';
+    }
+
+    private function notifyFunction(): string
+    {
+        $dot = strpos($this->table, '.');
+        if ($dot === false) {
+            return $this->table . '_notify';
+        }
+        return substr($this->table, 0, $dot) . '.' . substr($this->table, $dot + 1) . '_notify';
     }
 }

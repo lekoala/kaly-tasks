@@ -559,6 +559,78 @@ context: identity and authorization travel in its data and are checked again.
 With PostgreSQL, leases and delays use the database clock, so workers on
 several hosts agree.
 
+### Low-latency PostgreSQL workers
+
+An idle worker sleeps for `sleepMs` (1 s by default), so an isolated task can
+wait almost a second before it starts. To wake on commit instead, opt in to
+`LISTEN/NOTIFY`:
+
+```php
+use Kaly\Tasks\Store\PostgresNotifyWaiter;
+
+$store = new PostgresTaskStore(new PdoConnection(new PDO($queueDsn)));
+$waiter = PostgresNotifyWaiter::fromDsn($store, $queueDsn);
+
+$worker = new Worker(
+    $store,
+    $container->get(TaskRegistry::class),
+    $container->get(Injector::class)->invoke(...),
+    $container->get(LoggerInterface::class),
+    waiter: $waiter,
+);
+```
+
+Add the trigger to your migrations, after `schema()`:
+
+```php
+foreach ($store->notificationSchema() as $statement) {
+    // execute $statement
+}
+```
+
+`notificationSchema()` is idempotent and changes no table or index. It installs
+an `AFTER INSERT OR UPDATE` trigger and its function; `dropNotificationSchema()`
+removes both and restores plain polling. `notificationsEnabled()` reports
+whether the trigger is present. The waiter logs a warning at start when it is
+missing, then falls back to polling.
+
+`pg_notify()` cannot run inside a prepared transaction. If you use two-phase
+commit (XA), installing the trigger makes `PREPARE TRANSACTION` fail for any
+transaction that inserts, releases, recovers or manually retries a task. Enqueue
+outside the prepared transaction, or leave the trigger uninstalled and poll. This
+affects existing producers as soon as the trigger exists, even if no worker uses
+a waiter.
+
+The table stays the source of truth. A notification only makes the worker look
+again, and every wakeup ends in the usual reservation:
+
+- PostgreSQL delivers the notification at commit: nothing is sent before the
+  commit, on rollback or when deduplication skips the insert.
+- `release()` (a retry) and recovery from an expired lease notify again;
+  `complete()` does not.
+- The waiter waits at most until the next `available_at` of the polled queues,
+  so a task scheduled ahead is not held for the fallback. It also caps the wait
+  by `maxRuntime` and the next recovery.
+- A dedicated listener connection belongs to each worker. The wait is a real
+  block, not a query loop. Use `PostgresNotifyWaiter::fromDsn()` so a lost
+  listener reconnects on the next wait. On PHP 8.4+ it opens the connection with
+  `PDO::connect()` to get `Pdo\Pgsql::getNotify()`; on PHP 8.3 it uses the
+  not-yet-deprecated `pgsqlGetNotify()`.
+- A five second fallback (`fallbackMs`) covers a lost notification, a missing
+  trigger or a reconnect. `sliceMs` (250 ms) bounds the blocking slice, so
+  SIGTERM interrupts an idle wait within that slice. `Worker::stop()` wakes the
+  waiter directly.
+- `sleepMs` is ignored while a waiter is present: the waiter owns its fallback.
+  `stopWhenEmpty` disables the waiter entirely, since it exits instead of
+  waiting.
+
+LISTEN does not work through a transaction-pooling PgBouncer connection: give
+the waiter a direct or session-pooled connection to the same database. The
+trigger itself costs no measurable insert time, and an idle worker sends about
+0.7 statements per second with the default fallback instead of one reservation
+per `sleepMs`. See `bench/README.md` to reproduce the measurements on your own
+topology.
+
 ### Failures and retries
 
 A task that throws is retried with its type's backoff until `maxAttempts`, then
@@ -779,3 +851,8 @@ KALY_TASKS_PGSQL_DSN="" KALY_TASKS_MYSQL_DSN="" composer test
 The default DSNs expect Docker on ports 55432 (PostgreSQL) and 53306 (MySQL).
 If a database is configured but unreachable, the tests fail rather than silently
 skipping it.
+
+The PostgreSQL suite also covers the opt-in `LISTEN/NOTIFY` support: trigger
+semantics, schema install and drop, deferred wakeups, draining, reconnect and
+SIGTERM interrupting an idle wait. `php bench/run.php` reproduces the latency
+and reservation measurements; see `bench/README.md`.

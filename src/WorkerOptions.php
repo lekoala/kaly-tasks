@@ -20,7 +20,8 @@ final readonly class WorkerOptions
      * @param int $maxTasks Exit after this many tasks
      * @param int $maxRuntime Exit after this many seconds
      * @param int $memoryLimit Exit once memory usage reaches this many bytes
-     * @param int $sleepMs Pause when no task is available, in milliseconds
+     * @param int $sleepMs Pause when no task is available, in milliseconds.
+     *  Ignored when the worker has an IdleWaiter, which owns its fallback delay.
      * @param int $recoverInterval How often expired leases are recovered
      * @param bool $stopWhenEmpty Exit as soon as no task is available
      * @param bool $prioritizeQueues Reserve from each queue in order and take the

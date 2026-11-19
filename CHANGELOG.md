@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.8.0 - 2026-11-19
+
+- Add opt-in PostgreSQL `LISTEN/NOTIFY` support for low-latency workers. Pass a
+  `PostgresNotifyWaiter` as the optional `Worker` `waiter` argument to wake on
+  commit instead of sleeping for `WorkerOptions::$sleepMs`. An idle task can
+  start in milliseconds rather than up to a second later.
+- Add `PostgresTaskStore::notificationSchema()` and
+  `dropNotificationSchema()` for migrations. They install or remove an
+  `AFTER INSERT OR UPDATE` trigger on the task table, without changing the
+  table or its indexes. `notificationChannel()` hashes the table name into a
+  channel, so schema separators cannot collide and applications sharing a
+  database do not wake each other, and `notificationsEnabled()` reports whether
+  the trigger is installed.
+- Add `PostgresTaskStore::nextDueInMs()`: the waiter uses it to wake at the
+  next `available_at`, so deferred tasks, retries and multi-queue workers do
+  not wait for the fallback.
+- Add the `IdleWaiter` contract (`start()`, `wait()`, `stop()`, `close()`) and
+  `PostgresNotifyWaiter::fromDsn()`. The waiter owns a dedicated listener
+  connection, a five second fallback, a 250 ms blocking slice and notification
+  draining, so a burst does not cost one reservation per commit.
+- `Worker::stop()` interrupts an idle wait, and SIGTERM latency is bounded by
+  the waiter's slice. `stopWhenEmpty` disables the waiter; `sleepMs` is
+  ignored when one is present.
+- The trigger notifies only after commit, and only when a row is inserted as
+  pending, becomes pending, or changes `available_at`/`queue` while pending.
+  Rollbacks, deduplicated inserts and `complete()` send nothing; `release()`
+  and lease recovery do.
+- `pg_notify()` cannot run in a prepared transaction: installing the trigger
+  makes `PREPARE TRANSACTION` fail for a transaction that inserts, releases,
+  recovers or manually retries a task. Applications using two-phase commit (XA)
+  must enqueue outside the prepared transaction or leave the trigger uninstalled.
+- A lost listener logs a warning and forces one poll. If the reconnect fails,
+  the worker keeps polling at the waiter's fallback pace instead of stopping,
+  and retries the subscription on the next wait.
+- The listener is not part of the application connection pool. With
+  transaction-pooling PgBouncer, use a direct or session connection: LISTEN
+  does not survive transaction pooling.
+- Add `bench/` to reproduce the latency, reservation and statement
+  measurements against a local or remote PostgreSQL, and `bench/RESULTS.md`
+  for the current reference numbers.
+
 ## 0.7.0 - 2026-11-16
 
 - Add `TaskSequenceDispatcher::sequence([...], notBefore: ...)`, implemented by

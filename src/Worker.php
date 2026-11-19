@@ -25,6 +25,10 @@ use Throwable;
  * for example `$injector->invoke(...)` with kaly-di. Shared services must be
  * re-entrant: the worker opens no scope per task.
  *
+ * An optional IdleWaiter replaces the fixed sleep of an idle worker, so a task
+ * can start in milliseconds instead of waiting for the next poll. The waiter
+ * only decides when to look again: the store remains the source of truth.
+ *
  * With ext-pcntl, SIGTERM, SIGINT and SIGQUIT finish the current task then
  * stop, and a task running beyond `timeout` ends the process.
  *
@@ -51,6 +55,9 @@ final class Worker
      *  invocation, to set up and clean a log context, a trace span or a tenant.
      *  It must call its second argument exactly once and let its exceptions
      *  through: any exception it throws counts as a failure of the task.
+     * @param null|IdleWaiter $waiter Waits while the worker is idle instead of
+     *  sleeping for `WorkerOptions::$sleepMs`. It is ignored with
+     *  `stopWhenEmpty`, which exits instead of waiting.
      */
     public function __construct(
         private readonly TaskStore $store,
@@ -58,6 +65,7 @@ final class Worker
         private readonly Closure $invoke,
         private readonly LoggerInterface $logger = new NullLogger(),
         private readonly ?Closure $around = null,
+        private readonly ?IdleWaiter $waiter = null,
     ) {}
 
     /**
@@ -75,8 +83,11 @@ final class Worker
         $started = microtime(true);
         $recovered = null;
         $processed = 0;
+        // stopWhenEmpty exits instead of waiting: it never needs a subscription
+        $waiter = $options->stopWhenEmpty ? null : $this->waiter;
 
         try {
+            $waiter?->start();
             while (!$this->stopping) {
                 if ($recovered === null || (microtime(true) - $recovered) >= $options->recoverInterval) {
                     $count = $this->store->recover();
@@ -88,10 +99,14 @@ final class Worker
 
                 $task = $this->reserve($options);
                 if ($task === null) {
-                    if ($options->stopWhenEmpty) {
+                    if ($options->stopWhenEmpty || $this->stopping) {
                         break;
                     }
-                    $this->sleep($options->sleepMs);
+                    if ($waiter === null) {
+                        $this->sleep($options->sleepMs);
+                    } else {
+                        $waiter->wait($options->queues, $this->waitLimitMs($options, $started, $recovered));
+                    }
                 } else {
                     $this->process($task, $signals ? $options->timeout : 0);
                     $processed++;
@@ -106,6 +121,7 @@ final class Worker
                 }
             }
         } finally {
+            $waiter?->close();
             if ($signals) {
                 $this->restoreSignals();
             }
@@ -120,6 +136,7 @@ final class Worker
     public function stop(): void
     {
         $this->stopping = true;
+        $this->waiter?->stop();
     }
 
     /**
@@ -261,6 +278,20 @@ final class Worker
         while (!$this->stopping && microtime(true) < $until) {
             usleep(min(100_000, max(0, (int) (($until - microtime(true)) * 1_000_000))));
         }
+    }
+
+    /**
+     * The waiter owns its fallback delay; the worker only bounds it by the next
+     * recovery and by maxRuntime, so a signal never delays either limit.
+     */
+    private function waitLimitMs(WorkerOptions $options, float $started, ?float $recovered): int
+    {
+        $now = microtime(true);
+        $seconds = $options->maxRuntime - ($now - $started);
+        if ($recovered !== null && $options->recoverInterval > 0) {
+            $seconds = min($seconds, $options->recoverInterval - ($now - $recovered));
+        }
+        return max(0, (int) ceil($seconds * 1000));
     }
 
     private function listenToSignals(WorkerOptions $options): bool

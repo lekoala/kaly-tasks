@@ -4,6 +4,7 @@ vendor
 .trash
 .tmp
 *.log
+/bench/runs
 
 # demo
 demos/temp
