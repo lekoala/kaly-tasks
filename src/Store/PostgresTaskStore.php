@@ -146,7 +146,7 @@ final readonly class PostgresTaskStore implements TaskStore
         $row = $this->connection->fetchAll('SELECT CAST(EXISTS (
                 SELECT 1 FROM pg_trigger t
                 JOIN pg_class c ON c.oid = t.tgrelid
-                WHERE t.tgname = ? AND c.oid = to_regclass(?)
+                WHERE t.tgname = ? AND c.oid = to_regclass(?) AND t.tgenabled IN (\'O\', \'A\')
             ) AS TEXT) AS enabled', [$this->notifyTrigger(), $this->table])[0] ?? null;
         return ($row['enabled'] ?? null) === 'true';
     }

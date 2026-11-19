@@ -33,7 +33,13 @@
   must enqueue outside the prepared transaction or leave the trigger uninstalled.
 - A lost listener logs a warning and forces one poll. If the reconnect fails,
   the worker keeps polling at the waiter's fallback pace instead of stopping,
-  and retries the subscription on the next wait.
+  and retries the subscription on the next wait. The initial subscription
+  follows the same rule, so a listener that is momentarily unavailable does not
+  prevent the worker from processing tasks. The first wait after a successful
+  (re)subscription also forces a poll, so a task committed while unsubscribed is
+  not delayed by the fallback.
+- `notificationsEnabled()` checks that the trigger exists and is enabled
+  (`tgenabled` in `O` or `A`), so a disabled trigger is reported as missing.
 - The listener is not part of the application connection pool. With
   transaction-pooling PgBouncer, use a direct or session connection: LISTEN
   does not survive transaction pooling.

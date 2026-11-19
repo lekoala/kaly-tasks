@@ -20,8 +20,8 @@ use Throwable;
  *
  * A dedicated connection listens on a channel derived from the task table. The
  * table stays the source of truth: a signal only makes the worker look again,
- * and a fallback poll covers a lost notification, a reconnect or a missing
- * trigger.
+ * and a fallback poll covers a lost notification, a failed subscription, a
+ * reconnect or a missing trigger.
  *
  * On PHP 8.4 and later, create the listener with `PDO::connect()` or
  * `new Pdo\Pgsql()` so `Pdo\Pgsql::getNotify()` is available. On PHP 8.3, a
@@ -108,11 +108,17 @@ final class PostgresNotifyWaiter implements IdleWaiter
         if ($this->listener !== null) {
             return;
         }
-        $pdo = $this->connection instanceof PDO ? $this->connection : ($this->connection)();
-        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
-            throw new RuntimeException('The notification waiter needs a PostgreSQL PDO connection');
+        try {
+            $pdo = $this->connection instanceof PDO ? $this->connection : ($this->connection)();
+            if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
+                throw new RuntimeException('The notification waiter needs a PostgreSQL PDO connection');
+            }
+            $pdo->exec('LISTEN ' . $this->store->notificationChannel());
+        } catch (PDOException $error) {
+            // The store still works: poll until a later start() reconnects
+            $this->log('warning', 'The PostgreSQL listener is unavailable, polling until it reconnects', ['exception' => $error]);
+            return;
         }
-        $pdo->exec('LISTEN ' . $this->store->notificationChannel());
         $this->listener = $pdo;
         $this->notifier = $this->notifierFor($pdo);
         if (!$this->store->notificationsEnabled()) {
@@ -125,21 +131,16 @@ final class PostgresNotifyWaiter implements IdleWaiter
         if ($this->stopping) {
             return false;
         }
-        $listening = true;
-        try {
-            $this->start();
-        } catch (PDOException $error) {
-            if ($this->listener !== null) {
-                // The trigger check failed on the store connection, not the listener
-                throw $error;
-            }
-            // A listener failure must not stop the worker: the store still
-            // works, and the next wait retries the subscription.
-            $this->log('warning', 'The PostgreSQL listener is unavailable, polling until it reconnects', ['exception' => $error]);
-            $listening = false;
-        }
+        $wasListening = $this->listener !== null;
+        $this->start();
         if ($this->stopping) {
             return false;
+        }
+        $listening = $this->listener !== null;
+        if ($listening && !$wasListening) {
+            // A task committed before LISTEN sends no notification: poll once
+            // instead of waiting for the fallback.
+            return true;
         }
         if ($listening) {
             try {

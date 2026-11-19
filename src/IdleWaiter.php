@@ -17,6 +17,9 @@ interface IdleWaiter
     /**
      * Subscribes before the worker's first reservation, so no task inserted
      * afterwards can be missed. Calling it again is a no-op.
+     *
+     * A waiter that can keep polling should handle a transient subscription
+     * failure itself; an exception from this method stops the worker.
      */
     public function start(): void;
 

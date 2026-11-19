@@ -512,6 +512,55 @@ final class PostgresNotifyTest extends StoreTestCase
         }
     }
 
+    public function testTheWorkerProcessesTasksWhenTheListenerCannotStart(): void
+    {
+        $store = $this->postgresStore();
+        $this->store()->push(new EncodedTask('test.record', 'default', '{"entry":"ok"}'));
+        $attempts = 0;
+        $connection = static function () use (&$attempts): PDO {
+            $attempts++;
+            throw new PDOException('listener unavailable');
+        };
+        $waiter = new PostgresNotifyWaiter($store, $connection, fallbackMs: 100, sliceMs: 50);
+        $registry = (new TaskRegistry())->register('test.record', RecordTask::class);
+        $journal = new Journal();
+        $worker = new Worker($store, $registry, static fn(object $task) => $task($journal), waiter: $waiter);
+
+        // The initial start() failure must not prevent the reservation
+        $this->assertSame(1, $worker->run(new WorkerOptions(timeout: 0, maxTasks: 1, maxRuntime: 2, sleepMs: 0)));
+        $this->assertSame(1, $attempts);
+    }
+
+    public function testTheFirstWaitAfterResubscribingPollsImmediately(): void
+    {
+        $waiter = $this->waiter(fallbackMs: 5000);
+        $waiter->start();
+        try {
+            $waiter->close();
+
+            // Committed while no listener is subscribed: no notification is sent
+            $this->store()->push(new EncodedTask('test.record', 'default', '{}'), new DateTimeImmutable('+1 hour'));
+
+            $started = microtime(true);
+            $this->assertTrue($waiter->wait(['default'], 5000));
+            $this->assertLessThan(0.2, microtime(true) - $started);
+        } finally {
+            $waiter->close();
+        }
+    }
+
+    public function testADisabledTriggerIsReportedAsDisabled(): void
+    {
+        $store = $this->postgresStore();
+        $this->assertTrue($store->notificationsEnabled());
+
+        $this->pdo()->exec('ALTER TABLE ' . self::TABLE . ' DISABLE TRIGGER ' . self::TABLE . '_notify');
+        $this->assertFalse($store->notificationsEnabled());
+
+        $this->pdo()->exec('ALTER TABLE ' . self::TABLE . ' ENABLE ALWAYS TRIGGER ' . self::TABLE . '_notify');
+        $this->assertTrue($store->notificationsEnabled());
+    }
+
     /**
      * `new PDO()` returns a generic handle on PHP 8.5, where only
      * `Pdo\Pgsql::getNotify()` is supported. Mirror `fromDsn()`.

@@ -591,8 +591,8 @@ foreach ($store->notificationSchema() as $statement) {
 `notificationSchema()` is idempotent and changes no table or index. It installs
 an `AFTER INSERT OR UPDATE` trigger and its function; `dropNotificationSchema()`
 removes both and restores plain polling. `notificationsEnabled()` reports
-whether the trigger is present. The waiter logs a warning at start when it is
-missing, then falls back to polling.
+whether the trigger is present and enabled. The waiter logs a warning at start
+when it is missing, then falls back to polling.
 
 `pg_notify()` cannot run inside a prepared transaction. If you use two-phase
 commit (XA), installing the trigger makes `PREPARE TRANSACTION` fail for any
@@ -616,6 +616,11 @@ again, and every wakeup ends in the usual reservation:
   listener reconnects on the next wait. On PHP 8.4+ it opens the connection with
   `PDO::connect()` to get `Pdo\Pgsql::getNotify()`; on PHP 8.3 it uses the
   not-yet-deprecated `pgsqlGetNotify()`.
+- A listener that cannot connect at startup is not fatal: the waiter logs a
+  warning and polls. A failed reconnect does the same, and the subscription is
+  retried on the next wait. The first wait after a successful (re)subscription
+  forces one reservation, so a task committed while unsubscribed is not delayed
+  by the fallback. A store failure still stops the worker.
 - A five second fallback (`fallbackMs`) covers a lost notification, a missing
   trigger or a reconnect. `sliceMs` (250 ms) bounds the blocking slice, so
   SIGTERM interrupts an idle wait within that slice. `Worker::stop()` wakes the
